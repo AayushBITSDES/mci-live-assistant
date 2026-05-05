@@ -4,6 +4,7 @@ Phase 1 = echo only. Real processing lands in subsequent phases.
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 import logging
 from datetime import datetime, timezone
@@ -19,24 +20,27 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings.ensure_dirs()
+    cm = ContextManager()
+    if settings.fresh_start:
+        logger.info("Fresh start: skipping JSONL replay (clean demo state)")
+    else:
+        replayed = replay_recent(cm, lookback_hours=settings.replay_lookback_hours)
+        logger.info("Replayed %d recent events into ContextManager", replayed)
+    app.state.context_manager = cm
+    logger.info("Home server ready | provider=%s | fps=%d", settings.active_llm_provider, settings.target_fps)
+    yield
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="MCI Home Server",
         version="0.1.0",
         description="Always-on home brain for the contextual AI prototype.",
+        lifespan=lifespan,
     )
-
-    @app.on_event("startup")
-    async def _startup() -> None:
-        settings.ensure_dirs()
-        cm = ContextManager()
-        if settings.fresh_start:
-            logger.info("Fresh start: skipping JSONL replay (clean demo state)")
-        else:
-            replayed = replay_recent(cm, lookback_hours=settings.replay_lookback_hours)
-            logger.info("Replayed %d recent events into ContextManager", replayed)
-        app.state.context_manager = cm
-        logger.info("Home server ready | provider=%s | fps=%d", settings.active_llm_provider, settings.target_fps)
 
     @app.get("/health")
     async def health() -> dict:

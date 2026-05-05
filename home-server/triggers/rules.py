@@ -79,6 +79,10 @@ class DetectionResult:
     objects: list[str]
     person_present: bool
 
+    def __post_init__(self) -> None:
+        if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
+            raise ValueError("DetectionResult.timestamp must be timezone-aware")
+
 
 # --- Rule: kitchen abandonment ------------------------------------------
 
