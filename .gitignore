@@ -31,3 +31,6 @@ build/
 
 # --- OS / editor ---
 .DS_Store
+
+# --- Runtime data (JSONL audit trail, face embeddings, etc.) ---
+home-server/storage/

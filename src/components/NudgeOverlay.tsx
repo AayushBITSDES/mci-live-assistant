@@ -1,7 +1,7 @@
 // Nudge overlay: one full sentence, fades in/out, auto-dismisses.
 // Props are STABLE — Figma export drops in here as a replacement.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { NudgeMessage } from "../lib/types";
 
 export interface NudgeOverlayProps {
@@ -11,6 +11,8 @@ export interface NudgeOverlayProps {
 
 export function NudgeOverlay({ nudge, onDismiss }: NudgeOverlayProps) {
   const [visible, setVisible] = useState(false);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
 
   const nudgeId = nudge?.nudge_id;
   const dismissSec = nudge?.auto_dismiss_seconds ?? 10;
@@ -24,11 +26,11 @@ export function NudgeOverlay({ nudge, onDismiss }: NudgeOverlayProps) {
 
     const timeout = window.setTimeout(() => {
       setVisible(false);
-      onDismiss();
+      onDismissRef.current();
     }, dismissSec * 1000);
 
     return () => window.clearTimeout(timeout);
-  }, [nudgeId, dismissSec, onDismiss]);
+  }, [nudgeId, dismissSec]);
 
   if (!nudge || !visible) return null;
 
