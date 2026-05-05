@@ -11,26 +11,24 @@ export interface NudgeOverlayProps {
 
 export function NudgeOverlay({ nudge, onDismiss }: NudgeOverlayProps) {
   const [visible, setVisible] = useState(false);
-  const [currentId, setCurrentId] = useState<string | null>(null);
+
+  const nudgeId = nudge?.nudge_id;
+  const dismissSec = nudge?.auto_dismiss_seconds ?? 10;
 
   useEffect(() => {
-    if (!nudge) {
+    if (!nudgeId) {
       setVisible(false);
       return;
     }
-    if (nudge.nudge_id === currentId) {
-      return;
-    }
-    setCurrentId(nudge.nudge_id);
     setVisible(true);
 
     const timeout = window.setTimeout(() => {
       setVisible(false);
       onDismiss();
-    }, (nudge.auto_dismiss_seconds || 10) * 1000);
+    }, dismissSec * 1000);
 
     return () => window.clearTimeout(timeout);
-  }, [nudge, currentId, onDismiss]);
+  }, [nudgeId, dismissSec, onDismiss]);
 
   if (!nudge || !visible) return null;
 

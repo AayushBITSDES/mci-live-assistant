@@ -8,6 +8,7 @@ periodically so the wire format can be smoke-tested without credits.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -88,7 +89,7 @@ def create_app() -> FastAPI:
 
                 if msg_type == "frame":
                     frame_counter += 1
-                    nudge = _maybe_emit_debug_nudge(frame_counter, cm)
+                    nudge = await _maybe_emit_debug_nudge(frame_counter, cm)
                     if nudge is not None:
                         await ws.send_text(nudge.model_dump_json())
 
@@ -153,7 +154,7 @@ def _route_message(raw: str):
     return "unknown", payload
 
 
-def _maybe_emit_debug_nudge(frame_counter: int, cm: ContextManager):
+async def _maybe_emit_debug_nudge(frame_counter: int, cm: ContextManager):
     """Periodic hardcoded nudge so edge devs can smoke-test without API keys.
 
     Real LLM dispatch lands once `app.state.context_manager` is wired into
@@ -171,12 +172,15 @@ def _maybe_emit_debug_nudge(frame_counter: int, cm: ContextManager):
     )
 
     # Audit-log the debug emission so it shows up in the dashboard
-    append_event({
-        "event_type": "debug_nudge_emitted",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "nudge_id": nudge.nudge_id,
-        "frame_counter": frame_counter,
-    })
+    await asyncio.to_thread(
+        append_event,
+        {
+            "event_type": "debug_nudge_emitted",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "nudge_id": nudge.nudge_id,
+            "frame_counter": frame_counter,
+        },
+    )
 
     return nudge
 
