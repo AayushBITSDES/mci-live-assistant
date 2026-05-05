@@ -107,6 +107,22 @@ def test_runtime_settings_provider_lowercased(tmp_path: Path) -> None:
     assert load_runtime_settings(path).active_llm_provider == "grok"
 
 
+def test_runtime_settings_preserves_zero_over_defaults(tmp_path: Path) -> None:
+    """Stored 0 must not be replaced by `or default` fallbacks."""
+    path = tmp_path / "runtime_settings.json"
+    path.write_text(
+        json.dumps({
+            "yolo_confidence_threshold": 0.0,
+            "face_similarity_threshold": 0.0,
+            "target_fps": 0,
+        }),
+    )
+    loaded = load_runtime_settings(path)
+    assert loaded.yolo_confidence_threshold == 0.0
+    assert loaded.face_similarity_threshold == 0.0
+    assert loaded.target_fps == 0
+
+
 def test_runtime_settings_corrupt_file_returns_defaults(tmp_path: Path) -> None:
     path = tmp_path / "runtime_settings.json"
     path.write_text("not json")

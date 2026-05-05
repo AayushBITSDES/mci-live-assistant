@@ -114,9 +114,9 @@ class RuntimeSettings:
     def from_dict(cls, data: dict[str, Any]) -> "RuntimeSettings":
         return cls(
             active_llm_provider=str(data.get("active_llm_provider", "grok")).lower(),
-            yolo_confidence_threshold=_coerce_float(data.get("yolo_confidence_threshold")) or 0.5,
-            face_similarity_threshold=_coerce_float(data.get("face_similarity_threshold")) or 0.45,
-            target_fps=_coerce_int(data.get("target_fps")) or 5,
+            yolo_confidence_threshold=_float_default(data.get("yolo_confidence_threshold"), 0.5),
+            face_similarity_threshold=_float_default(data.get("face_similarity_threshold"), 0.45),
+            target_fps=_int_default(data.get("target_fps"), 5),
             fresh_start=bool(data.get("fresh_start", False)),
         )
 
@@ -159,3 +159,15 @@ def _coerce_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _float_default(value: Any, default: float) -> float:
+    """Like `_coerce_float` but fall back only when missing/invalid — not when stored as 0.0."""
+    v = _coerce_float(value)
+    return default if v is None else v
+
+
+def _int_default(value: Any, default: int) -> int:
+    """Like `_coerce_int` but fall back only when missing/invalid — not when stored as 0."""
+    v = _coerce_int(value)
+    return default if v is None else v
