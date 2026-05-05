@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MCI Home Server — Phase 8 Test Client</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: #101113; color: #f4f1ea;
+      font: 14px/1.5 system-ui, sans-serif;
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 800px; margin: 32px auto; padding: 24px;
+      display: grid; gap: 20px;
+    }
+    h1 { margin: 0; font-size: 22px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type=text] {
+      flex: 1; min-width: 240px; padding: 8px 12px;
+      background: #1c1d20; color: inherit;
+      border: 1px solid #2a2c30; border-radius: 6px;
+    }
+    button {
+      padding: 8px 16px;
+      background: #2a2c30; color: inherit;
+      border: 1px solid #3a3c40; border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { background: #3a3c40; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    video {
+      width: 100%; max-width: 480px;
+      border-radius: 8px; background: #000;
+    }
+    #status {
+      padding: 8px 12px; border-radius: 6px;
+      background: #1c1d20; border: 1px solid #2a2c30;
+    }
+    .pill {
+      display: inline-block;
+      padding: 2px 10px; border-radius: 999px;
+      background: #2a2c30; font-size: 12px;
+    }
+    .pill.live { background: #1e3a1e; color: #aaffaa; }
+    .pill.fail { background: #3a1e1e; color: #ffaaaa; }
+    .nudge {
+      padding: 16px 20px; border-radius: 12px;
+      background: rgba(244, 241, 234, 0.1);
+      border-left: 3px solid #ffd166;
+      animation: fade 600ms ease;
+    }
+    @keyframes fade {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .log {
+      max-height: 240px; overflow-y: auto;
+      font-family: monospace; font-size: 12px;
+      background: #0d0e10; padding: 12px;
+      border-radius: 6px; border: 1px solid #2a2c30;
+    }
+    .log-line { padding: 2px 0; opacity: 0.8; }
+    .privacy-dot {
+      display: inline-block;
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #4ade80; margin-right: 6px;
+      box-shadow: 0 0 8px #4ade80;
+    }
+    .privacy-dot.off { background: #6b7280; box-shadow: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>MCI Home Server — Test Client</h1>
+    <div class="row">
+      <input id="ws-url" type="text" value="ws://localhost:8000/ws/stream" />
+      <button id="connect-btn">Connect</button>
+      <button id="disconnect-btn" disabled>Disconnect</button>
+    </div>
+
+    <div id="status">
+      <span id="status-pill" class="pill">disconnected</span>
+      &nbsp;
+      <span id="frame-counter">frames sent: 0</span>
+    </div>
+
+    <div class="row">
+      <span><span id="privacy" class="privacy-dot off"></span>camera</span>
+      <span style="margin-left:auto" id="surface-pill" class="pill">surface: desktop</span>
+    </div>
+
+    <video id="video" autoplay muted playsinline></video>
+
+    <div id="nudge-area"></div>
+
+    <div class="log" id="log"></div>
+  </div>
+
+  <script>
+    const ws_input = document.getElementById('ws-url');
+    const connect_btn = document.getElementById('connect-btn');
+    const disconnect_btn = document.getElementById('disconnect-btn');
+    const status_pill = document.getElementById('status-pill');
+    const frame_counter_el = document.getElementById('frame-counter');
+    const privacy_dot = document.getElementById('privacy');
+    const video = document.getElementById('video');
+    const nudge_area = document.getElementById('nudge-area');
+    const log_el = document.getElementById('log');
+
+    let ws = null;
+    let frame_interval = null;
+    let stream = null;
+    let frames_sent = 0;
+    const FPS = 5;
+    const DEVICE_ID = 'test-client-' + Math.random().toString(36).slice(2, 8);
+
+    function log(msg) {
+      const line = document.createElement('div');
+      line.className = 'log-line';
+      line.textContent = '[' + new Date().toISOString().slice(11, 19) + '] ' + msg;
+      log_el.prepend(line);
+      while (log_el.children.length > 50) log_el.lastChild.remove();
+    }
+
+    function setStatus(text, cls) {
+      status_pill.textContent = text;
+      status_pill.className = 'pill ' + (cls || '');
+    }
+
+    async function startCamera() {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480 },
+        audio: false,
+      });
+      video.srcObject = stream;
+      privacy_dot.classList.remove('off');
+    }
+
+    function stopCamera() {
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+      }
+      video.srcObject = null;
+      privacy_dot.classList.add('off');
+    }
+
+    function captureFrameB64() {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+      return { b64: dataUrl.split(',')[1], width: canvas.width, height: canvas.height };
+    }
+
+    function showNudge(payload) {
+      const div = document.createElement('div');
+      div.className = 'nudge';
+      div.textContent = '🪞 ' + payload.sentence;
+      nudge_area.prepend(div);
+
+      // Browser TTS for the demo
+      if ('speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance(payload.sentence);
+        u.rate = 0.92;
+        window.speechSynthesis.speak(u);
+      }
+
+      const dismiss_in = (payload.auto_dismiss_seconds || 10) * 1000;
+      setTimeout(() => div.remove(), dismiss_in);
+    }
+
+    async function connect() {
+      try {
+        await startCamera();
+      } catch (e) {
+        log('Camera error: ' + e.message);
+        return;
+      }
+
+      const url = ws_input.value
+        + (ws_input.value.includes('?') ? '&' : '?')
+        + 'device_id=' + DEVICE_ID + '&surface=desktop';
+      ws = new WebSocket(url);
+
+      ws.onopen = () => {
+        setStatus('connected', 'live');
+        log('connected to ' + url);
+        connect_btn.disabled = true;
+        disconnect_btn.disabled = false;
+        frames_sent = 0;
+        frame_interval = setInterval(sendFrame, 1000 / FPS);
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const payload = JSON.parse(ev.data);
+          if (payload.type === 'nudge') {
+            showNudge(payload);
+            log('nudge: ' + payload.sentence);
+          } else if (payload.type === 'ack') {
+            log('ack: ' + payload.message);
+          } else {
+            log('msg: ' + ev.data.slice(0, 100));
+          }
+        } catch (e) {
+          log('parse error: ' + e.message);
+        }
+      };
+
+      ws.onclose = () => {
+        setStatus('disconnected');
+        log('disconnected');
+        if (frame_interval) clearInterval(frame_interval);
+        stopCamera();
+        connect_btn.disabled = false;
+        disconnect_btn.disabled = true;
+      };
+
+      ws.onerror = (e) => {
+        setStatus('error', 'fail');
+        log('ws error');
+      };
+    }
+
+    function sendFrame() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (!video.videoWidth) return;
+      const { b64, width, height } = captureFrameB64();
+      const msg = {
+        type: 'frame',
+        device_id: DEVICE_ID,
+        surface: 'desktop',
+        timestamp: new Date().toISOString(),
+        image_b64: b64,
+        width, height,
+      };
+      ws.send(JSON.stringify(msg));
+      frames_sent++;
+      frame_counter_el.textContent = 'frames sent: ' + frames_sent;
+    }
+
+    function disconnect() {
+      if (ws) ws.close();
+    }
+
+    connect_btn.addEventListener('click', connect);
+    disconnect_btn.addEventListener('click', disconnect);
+  </script>
+</body>
+</html>
