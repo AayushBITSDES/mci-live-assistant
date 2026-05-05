@@ -15,6 +15,21 @@ st.caption("Read from the JSONL audit trail. Refresh to see the latest.")
 
 settings.ensure_dirs()
 
+
+def _humanize_age(ts: datetime | None) -> str:
+    if ts is None:
+        return ""
+    now = datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    minutes = int((now - ts).total_seconds() // 60)
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min ago"
+    return f"{minutes // 60}h {minutes % 60}m ago"
+
+
 if st.button("🔄 Refresh"):
     st.rerun()
 
@@ -67,19 +82,3 @@ else:
         kind = event.get("event_type", "?")
         rest = {k: v for k, v in event.items() if k not in ("timestamp", "event_type")}
         st.markdown(f"`{ts}` &nbsp; **{kind}** &nbsp; `{rest}`")
-
-
-# --- Helper ---------------------------------------------------------------
-
-def _humanize_age(ts: datetime | None) -> str:
-    if ts is None:
-        return ""
-    now = datetime.now(timezone.utc)
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    minutes = int((now - ts).total_seconds() // 60)
-    if minutes < 1:
-        return "just now"
-    if minutes < 60:
-        return f"{minutes} min ago"
-    return f"{minutes // 60}h {minutes % 60}m ago"

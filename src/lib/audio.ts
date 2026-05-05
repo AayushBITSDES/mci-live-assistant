@@ -36,28 +36,49 @@ export function playChimeAndAudioB64(b64: string): void {
   }, 260);
 }
 
-function playChime(): void {
+/** One shared context per page — creating a new AudioContext per chime hits browser limits (~6). */
+let sharedChimeContext: AudioContext | null = null;
+
+function getSharedChimeContext(): AudioContext | null {
   const AudioContextClass =
     window.AudioContext ||
     (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextClass) {
+    return null;
+  }
+  if (!sharedChimeContext || sharedChimeContext.state === "closed") {
+    sharedChimeContext = new AudioContextClass();
+  }
+  return sharedChimeContext;
+}
+
+function playChime(): void {
+  const audioContext = getSharedChimeContext();
+  if (!audioContext) {
     return;
   }
 
-  const audioContext = new AudioContextClass();
-  const oscillator = audioContext.createOscillator();
-  const gain = audioContext.createGain();
+  const run = (): void => {
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
 
-  oscillator.type = "sine";
-  oscillator.frequency.setValueAtTime(660, audioContext.currentTime);
-  oscillator.frequency.exponentialRampToValueAtTime(880, audioContext.currentTime + 0.18);
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(660, audioContext.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(880, audioContext.currentTime + 0.18);
 
-  gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.18, audioContext.currentTime + 0.03);
-  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.22);
+    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.18, audioContext.currentTime + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.22);
 
-  oscillator.connect(gain);
-  gain.connect(audioContext.destination);
-  oscillator.start();
-  oscillator.stop(audioContext.currentTime + 0.24);
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+    oscillator.start();
+    oscillator.stop(audioContext.currentTime + 0.24);
+  };
+
+  if (audioContext.state === "suspended") {
+    void audioContext.resume().then(run);
+  } else {
+    run();
+  }
 }
