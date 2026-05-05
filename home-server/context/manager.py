@@ -105,12 +105,17 @@ class ContextManager:
         if value is None:
             return None
         if isinstance(value, datetime):
+            if value.tzinfo is None or value.utcoffset() is None:
+                return value.replace(tzinfo=timezone.utc)
             return value
         if isinstance(value, str):
             try:
-                return datetime.fromisoformat(value)
+                parsed = datetime.fromisoformat(value)
             except ValueError:
                 return None
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
         return None
 
     def snapshot(self) -> dict[str, Any]:

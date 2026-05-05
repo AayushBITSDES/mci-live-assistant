@@ -115,6 +115,13 @@ def test_read_filters_by_cutoff(tmp_events_dir: Path) -> None:
     assert "old" not in types
 
 
+def test_read_accepts_legacy_naive_timestamps(tmp_events_dir: Path) -> None:
+    naive_now = datetime.now().replace(microsecond=0)
+    append_event({"event_type": "legacy", "timestamp": naive_now.isoformat()}, events_dir=tmp_events_dir)
+    events = list(read_events_since(_now() - timedelta(hours=1), events_dir=tmp_events_dir))
+    assert [e["event_type"] for e in events] == ["legacy"]
+
+
 # -- Replay invariant: same events -> same state -------------------------
 
 def test_replay_produces_identical_state_to_live(tmp_events_dir: Path) -> None:
@@ -161,6 +168,14 @@ def test_summary_includes_activity_and_medication() -> None:
     assert "[Recent Context]" in summary
     assert "making_tea" in summary
     assert "medication" in summary.lower()
+
+
+def test_naive_timestamp_is_normalized_to_utc_in_state() -> None:
+    cm = ContextManager()
+    naive_now = datetime.now().replace(microsecond=0)
+    cm.record_event({"event_type": "activity_started", "activity": "making_tea", "timestamp": naive_now.isoformat()})
+    assert cm.state.activity_start is not None
+    assert cm.state.activity_start.tzinfo is timezone.utc
 
 
 def test_summary_when_empty_is_still_informative() -> None:

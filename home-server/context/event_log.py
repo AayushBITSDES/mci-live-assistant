@@ -16,6 +16,16 @@ from typing import Any, Iterable
 from app.config import settings
 
 
+def _parse_event_time(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 def _path_for(day: date, events_dir: Path | None = None) -> Path:
     base = events_dir if events_dir is not None else settings.events_dir
     return base / f"{day.isoformat()}.jsonl"
@@ -61,9 +71,8 @@ def read_events_since(cutoff: datetime, *, events_dir: Path | None = None) -> It
                     continue
                 ts = event.get("timestamp")
                 if isinstance(ts, str):
-                    try:
-                        event_time = datetime.fromisoformat(ts)
-                    except ValueError:
+                    event_time = _parse_event_time(ts)
+                    if event_time is None:
                         continue
                     if event_time >= cutoff:
                         yield event

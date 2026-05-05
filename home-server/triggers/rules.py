@@ -73,11 +73,17 @@ class DetectionResult:
 
     `objects` is a list of label strings from the latest frame. We do not
     need bounding boxes for any current rule — the detector module is
-    free to keep them but the rules ignore them.
+    free to keep them but the rules ignore them. `recognized_names`
+    carries identity matches for future/person-specific rules.
     """
     timestamp: datetime
     objects: list[str]
     person_present: bool
+    recognized_names: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
+            raise ValueError("DetectionResult.timestamp must be timezone-aware")
 
 
 # --- Rule: kitchen abandonment ------------------------------------------

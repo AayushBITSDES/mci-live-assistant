@@ -49,6 +49,17 @@ def test_kitchen_scene_requires_at_least_one_kitchen_object() -> None:
     assert detect_kitchen_scene(_det(ts, ["cup"], person=True)) is True
 
 
+def test_detection_result_rejects_naive_timestamp() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        DetectionResult(timestamp=datetime.now(), objects=[], person_present=False)
+
+
+def test_detection_result_default_recognized_names_empty() -> None:
+    ts = datetime.now(timezone.utc)
+    d = DetectionResult(timestamp=ts, objects=[], person_present=False)
+    assert d.recognized_names == []
+
+
 # --- Activity opens after MIN frames ------------------------------------
 
 def test_kitchen_activity_opens_after_min_frames(gate_with_emitter) -> None:
