@@ -1,0 +1,44 @@
+# Home Server - MCI Live Assistant (Hybrid GPU offload)
+# Python 3.10+ required
+
+# --- Core web / streaming ---
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+starlette
+
+# --- Vision: Object detection ---
+ultralytics>=8.3.0          # YOLOv10s
+
+# --- Vision: Face recognition (server-side, GPU-aware) ---
+insightface
+onnxruntime-gpu; platform_system == "Linux" or platform_system == "Windows"
+onnxruntime; platform_system == "Darwin"
+
+# --- Audio: server-side ASR + TTS ---
+faster-whisper              # Whisper medium for ASR
+piper-tts                   # Offline high-quality neural TTS
+soundfile
+numpy
+
+# --- LLM clients (multi-provider) ---
+openai>=1.0.0               # xAI Grok-4.3 (OpenAI-compatible at api.x.ai/v1)
+google-genai                # Google Gemini AI Studio (Gemini 3 Flash)
+
+# --- Dashboard ---
+streamlit
+streamlit-webrtc
+
+# --- Utilities ---
+Pillow
+python-dotenv
+pydantic>=2.0
+pydantic-settings>=2.0
+aiofiles
+
+# --- Testing (Phase 0 harness tests) ---
+pytest>=8.0
+pytest-asyncio
+pytest-mock
+httpx                        # async HTTP for testing
