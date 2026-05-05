@@ -107,13 +107,15 @@ class FaceRecognizer:
                 continue
             new_embeddings.append(emb)
 
-        if not new_embeddings:
-            return 0
-
         with self._lock:
-            bucket = self._embeddings.setdefault(name, [])
-            bucket.extend(new_embeddings)
-            self._save_store_locked()
+            if new_embeddings:
+                bucket = self._embeddings.setdefault(name, [])
+                bucket.extend(new_embeddings)
+            elif image_paths:
+                # No faces in any photo — still record the name with an empty bucket.
+                self._embeddings.setdefault(name, [])
+            if new_embeddings or image_paths:
+                self._save_store_locked()
         return len(new_embeddings)
 
     def recognize(self, frame: bytes) -> list[FaceMatch]:

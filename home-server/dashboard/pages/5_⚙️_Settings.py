@@ -1,6 +1,8 @@
 """Runtime settings: LLM provider, FPS, thresholds, fresh start."""
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
+
 import streamlit as st
 
 from app.config import settings
@@ -71,10 +73,17 @@ fresh = st.checkbox(
 st.markdown("---")
 st.subheader("Danger zone")
 if st.button("🧹 Wipe all events (today + yesterday)"):
+    # Filenames are YYYY-MM-DD.jsonl (see context/event_log.py) — only remove
+    # the last two days, not the entire history.
+    today = datetime.now(timezone.utc).date()
+    yesterday = date.fromordinal(today.toordinal() - 1)
+    targets = {f"{today.isoformat()}.jsonl", f"{yesterday.isoformat()}.jsonl"}
     wiped = 0
-    for f in settings.events_dir.glob("*.jsonl"):
-        f.unlink()
-        wiped += 1
+    for name in targets:
+        path = settings.events_dir / name
+        if path.is_file():
+            path.unlink()
+            wiped += 1
     st.success(f"Wiped {wiped} event log file(s).")
 
 # --- Save -----------------------------------------------------------------
