@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import math
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -40,6 +41,7 @@ class FaceRecognizer:
     ) -> None:
         self._store_path = Path(store_path)
         self._threshold = similarity_threshold
+        self._lock = threading.Lock()
         self._embeddings: dict[str, list[list[float]]] = self._load_store()
         if app is not None:
             self._app = app
@@ -76,6 +78,10 @@ class FaceRecognizer:
             return {}
 
     def save_store(self) -> None:
+        with self._lock:
+            self._save_store_locked()
+
+    def _save_store_locked(self) -> None:
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
         with self._store_path.open("w", encoding="utf-8") as f:
             json.dump(self._embeddings, f)
@@ -83,7 +89,8 @@ class FaceRecognizer:
     # --- Public API --------------------------------------------------------
 
     def known_names(self) -> list[str]:
-        return sorted(self._embeddings.keys())
+        with self._lock:
+            return sorted(self._embeddings.keys())
 
     def add_face(self, name: str, image_paths: list[Path]) -> int:
         """Embed every photo for `name` and persist to disk.
@@ -91,27 +98,36 @@ class FaceRecognizer:
         Returns the number of embeddings successfully added (faces detected).
         Skips images where no face is found.
         """
-        added = 0
-        bucket = self._embeddings.setdefault(name, [])
+        new_embeddings: list[list[float]] = []
         for path in image_paths:
             with Path(path).open("rb") as f:
                 emb = self._embed_first_face(f.read())
             if emb is None:
                 logger.warning("No face detected in %s — skipping", path)
                 continue
-            bucket.append(emb)
-            added += 1
-        self.save_store()
-        return added
+            new_embeddings.append(emb)
+
+        if not new_embeddings:
+            return 0
+
+        with self._lock:
+            bucket = self._embeddings.setdefault(name, [])
+            bucket.extend(new_embeddings)
+            self._save_store_locked()
+        return len(new_embeddings)
 
     def recognize(self, frame: bytes) -> list[FaceMatch]:
         """Return all faces in the frame whose best match passes threshold."""
         faces = self._extract_faces(frame)
+        with self._lock:
+            embeddings_snapshot = {
+                name: list(ref_embs) for name, ref_embs in self._embeddings.items()
+            }
         matches: list[FaceMatch] = []
         for face_emb, bbox in faces:
             best_name: Optional[str] = None
             best_score = -1.0
-            for name, ref_embs in self._embeddings.items():
+            for name, ref_embs in embeddings_snapshot.items():
                 for ref in ref_embs:
                     score = _cosine(face_emb, ref)
                     if score > best_score:

@@ -17,6 +17,17 @@ st.caption("Drop 5–10 photos per person. Multiple angles + lighting recommende
 
 settings.ensure_dirs()
 
+
+def _delete_person(faces_dir: Path, name: str) -> None:
+    folder = faces_dir / name
+    if folder.exists():
+        for f in folder.iterdir():
+            if f.is_file():
+                f.unlink()
+        folder.rmdir()
+    st.success(f"Removed {name}")
+
+
 # --- Existing faces overview ---------------------------------------------
 
 known = list_known_faces(settings.faces_dir)
@@ -34,16 +45,6 @@ with col_a:
             if row[2].button("🗑️ Delete", key=f"del-{name}"):
                 _delete_person(settings.faces_dir, name)
                 st.rerun()
-
-
-def _delete_person(faces_dir: Path, name: str) -> None:
-    folder = faces_dir / name
-    if folder.exists():
-        for f in folder.iterdir():
-            if f.is_file():
-                f.unlink()
-        folder.rmdir()
-    st.success(f"Removed {name}")
 
 
 # --- Add a new person -----------------------------------------------------

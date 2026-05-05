@@ -54,6 +54,12 @@ def test_detection_result_rejects_naive_timestamp() -> None:
         DetectionResult(timestamp=datetime.now(), objects=[], person_present=False)
 
 
+def test_detection_result_default_recognized_names_empty() -> None:
+    ts = datetime.now(timezone.utc)
+    d = DetectionResult(timestamp=ts, objects=[], person_present=False)
+    assert d.recognized_names == []
+
+
 # --- Activity opens after MIN frames ------------------------------------
 
 def test_kitchen_activity_opens_after_min_frames(gate_with_emitter) -> None:

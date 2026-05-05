@@ -48,5 +48,6 @@ class FrameProcessor:
             timestamp=ts,
             objects=full.object_labels,
             person_present=full.person_present,
+            recognized_names=full.recognized_names,
         )
         return full, reduced

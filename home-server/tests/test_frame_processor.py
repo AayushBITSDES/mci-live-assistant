@@ -58,6 +58,7 @@ async def test_process_returns_full_and_reduced_results() -> None:
     assert reduced.timestamp == ts
     assert reduced.person_present is True
     assert reduced.objects == ["person", "bottle"]
+    assert reduced.recognized_names == ["Anjali"]
 
 
 @pytest.mark.asyncio
@@ -71,6 +72,7 @@ async def test_process_with_no_detections() -> None:
     assert full.faces == []
     assert reduced.person_present is False
     assert reduced.objects == []
+    assert reduced.recognized_names == []
     # Auto-generated timestamp is timezone-aware (matches DetectionResult contract)
     assert reduced.timestamp.tzinfo is not None
 
