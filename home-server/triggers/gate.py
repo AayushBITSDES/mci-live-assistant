@@ -78,6 +78,15 @@ class TriggerGate:
             candidates.append(kitchen_candidate)
             event = open_risk_window_event(CandidateKind.KITCHEN_ABANDONED.value, now=detection.timestamp)
             self._record_and_emit(event)
+            # End the activity so the next kitchen session starts with a
+            # fresh activity_start. Without this, current_activity stays
+            # set forever and the next absence (even hours later) instantly
+            # fires a new abandonment event.
+            self._record_and_emit({
+                "event_type": "activity_ended",
+                "activity": "kitchen_activity",
+                "timestamp": detection.timestamp.isoformat(),
+            })
 
         # Medication: only check after enough consecutive bottle frames so
         # that someone walking past does not trigger.

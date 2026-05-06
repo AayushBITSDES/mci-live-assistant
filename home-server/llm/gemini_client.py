@@ -47,7 +47,20 @@ class GeminiClient(LLMClient):
         persona: str = "shanta",
     ) -> NudgeResult:
         user_prompt = build_nudge_prompt(context_summary, persona)
-        image_bytes = base64.b64decode(image_b64)
+        # b64decode raises binascii.Error on malformed input — broader
+        # `Exception` catches both that and any PIL/IO surprises while
+        # keeping the WebSocket handler alive on bad frames.
+        try:
+            image_bytes = base64.b64decode(image_b64)
+        except Exception as exc:
+            logger.warning("GeminiClient: failed to decode image_b64 (%s)", exc)
+            return NudgeResult(
+                sentence=None,
+                should_nudge=False,
+                validation=None,
+                raw_text="",
+                provider=self.provider_name,
+            )
 
         # google-genai is sync; run in thread to keep the asyncio caller responsive.
         def _call() -> Any:

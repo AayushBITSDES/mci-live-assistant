@@ -25,7 +25,16 @@ export function useWebSocket(): WebSocketHandle {
   });
 
   const connect = useCallback((url: string, deviceId: string, surface: SurfaceMode) => {
-    if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+    // Skip only if a usable socket exists. A socket in CLOSING/OPEN/CONNECTING
+    // is "live"; CLOSED means we're free to start fresh. Without the CLOSING
+    // check, rapid Disconnect → Connect silently no-ops while the old socket
+    // is still tearing down.
+    const existing = wsRef.current;
+    if (
+      existing &&
+      existing.readyState !== WebSocket.CLOSED &&
+      existing.readyState !== WebSocket.CLOSING
+    ) {
       return;
     }
 
@@ -36,20 +45,28 @@ export function useWebSocket(): WebSocketHandle {
     const ws = new WebSocket(fullUrl);
     wsRef.current = ws;
 
+    // Each handler captures `ws` and only mutates shared state when it
+    // is still the active socket. Without these identity guards, the old
+    // socket's late-firing `close` event would clobber the new socket's
+    // `connecting` / `connected` state during a rapid reconnect.
     ws.addEventListener("open", () => {
+      if (wsRef.current !== ws) return;
       setState((s) => ({ ...s, status: "connected", framesSent: 0 }));
     });
 
     ws.addEventListener("close", () => {
+      if (wsRef.current !== ws) return;
       setState((s) => ({ ...s, status: "disconnected" }));
       wsRef.current = null;
     });
 
     ws.addEventListener("error", () => {
+      if (wsRef.current !== ws) return;
       setState((s) => ({ ...s, status: "error" }));
     });
 
     ws.addEventListener("message", (ev) => {
+      if (wsRef.current !== ws) return;
       try {
         const payload = JSON.parse(ev.data) as ServerMessage;
         if (payload.type === "nudge") {

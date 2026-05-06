@@ -158,6 +158,55 @@ def test_kitchen_candidate_silenced_for_every_subsequent_frame(gate_with_emitter
     assert nonempty[0][0].kind == CandidateKind.KITCHEN_ABANDONED
 
 
+def test_kitchen_activity_ends_after_abandonment_so_next_session_starts_fresh(gate_with_emitter) -> None:
+    """Regression test for the never-transitions-out lifecycle bug.
+
+    Before the fix, current_activity stayed set forever after the first
+    abandonment, so the next time a person was absent (even hours later)
+    the rule would instantly fire because elapsed = now - original_start
+    was already past threshold. After the fix, the gate emits
+    activity_ended when abandonment fires, and subsequent kitchen
+    sessions start with a fresh activity_start.
+    """
+    cm, gate, _ = gate_with_emitter
+    base = datetime.now(timezone.utc)
+
+    # Session 1: open + abandon
+    for i in range(MIN_KITCHEN_OBSERVATION_FRAMES):
+        gate.process_frame(_det(base + timedelta(seconds=i * 0.2), ["cup"], person=True))
+    gate.process_frame(_det(base + KITCHEN_ABANDONMENT_THRESHOLD + timedelta(seconds=5), [], person=False))
+
+    # After the candidate fires, activity has ended in state
+    assert cm.state.current_activity is None
+    assert cm.state.activity_start is None
+
+    # Externally close the abandonment window (e.g. user voice-dismissal)
+    open_window = next(w for w in cm.state.open_risk_windows if w.scenario == CandidateKind.KITCHEN_ABANDONED.value) \
+        if cm.state.open_risk_windows else None
+    assert open_window is not None
+    cm.record_event({
+        "event_type": "risk_window_closed",
+        "window_id": open_window.id,
+        "status": "resolved",
+        "timestamp": (base + KITCHEN_ABANDONMENT_THRESHOLD + timedelta(seconds=10)).isoformat(),
+    })
+
+    # Session 2 starts much later (an hour gap)
+    later_base = base + timedelta(hours=1)
+    for i in range(MIN_KITCHEN_OBSERVATION_FRAMES):
+        gate.process_frame(_det(later_base + timedelta(seconds=i * 0.2), ["cup"], person=True))
+    assert cm.state.current_activity == "kitchen_activity"
+    assert cm.state.activity_start is not None
+    # activity_start should be inside the SECOND session, not stuck at base
+    assert cm.state.activity_start >= later_base
+
+    # Person leaves immediately — should NOT fire abandonment because we
+    # just opened the activity. Without the fix, elapsed would have been
+    # ~1 hour and the rule would fire on the very next absent frame.
+    candidates = gate.process_frame(_det(later_base + timedelta(seconds=2), [], person=False))
+    assert candidates == []
+
+
 # --- Audit-trail invariant ----------------------------------------------
 
 def test_every_state_change_is_emitted(gate_with_emitter) -> None:

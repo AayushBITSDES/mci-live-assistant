@@ -112,3 +112,19 @@ async def test_voice_command_no_function_call_returns_none() -> None:
 def test_constructor_requires_api_key_or_client() -> None:
     with pytest.raises(ValueError):
         GeminiClient(api_key="")
+
+
+@pytest.mark.asyncio
+async def test_malformed_base64_returns_no_nudge_instead_of_crashing() -> None:
+    """Regression test: bad base64 must not propagate binascii.Error."""
+    response = _mock_response(text="never reached")
+    client = GeminiClient(api_key="x", client=_mock_client(response))
+
+    # "%%%" is not valid base64 — would raise binascii.Error from b64decode
+    result = await client.generate_nudge(
+        image_b64="%%%not-base64%%%",
+        context_summary="[Recent Context]",
+    )
+    assert result.should_nudge is False
+    assert result.sentence is None
+    assert result.provider == "gemini"
