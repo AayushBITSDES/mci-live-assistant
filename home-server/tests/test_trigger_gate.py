@@ -120,13 +120,42 @@ def test_abandonment_does_not_double_fire_when_window_already_open(gate_with_emi
         gate.process_frame(_det(base + timedelta(seconds=i * 0.2), ["cup"], person=True))
 
     after = base + KITCHEN_ABANDONMENT_THRESHOLD + timedelta(seconds=5)
-    gate.process_frame(_det(after, [], person=False))
+    first = gate.process_frame(_det(after, [], person=False))
     later = after + timedelta(seconds=10)
-    gate.process_frame(_det(later, [], person=False))
+    second = gate.process_frame(_det(later, [], person=False))
 
-    # Only one risk_window_opened event
+    # First call past threshold: one candidate + one window-open event
+    assert len(first) == 1 and first[0].kind == CandidateKind.KITCHEN_ABANDONED
+    # Second call: NO candidate (window already open) — guards the LLM
+    # dispatcher from burning ~300 calls per 60s of absence
+    assert second == []
     open_events = [e for e in emitted if e["event_type"] == "risk_window_opened" and e.get("scenario") == "kitchen_abandoned"]
     assert len(open_events) == 1
+
+
+def test_kitchen_candidate_silenced_for_every_subsequent_frame(gate_with_emitter) -> None:
+    """Regression test for the kitchen_candidate-on-every-frame bug.
+
+    At 5 FPS, once the threshold is crossed the rule keeps firing on each
+    frame. The gate must suppress the candidate (not just the event)
+    while a window is already open.
+    """
+    cm, gate, _ = gate_with_emitter
+    base = datetime.now(timezone.utc)
+    for i in range(MIN_KITCHEN_OBSERVATION_FRAMES):
+        gate.process_frame(_det(base + timedelta(seconds=i * 0.2), ["cup"], person=True))
+
+    # Cross the abandonment threshold, then keep sending absent frames at 5 FPS
+    start = base + KITCHEN_ABANDONMENT_THRESHOLD + timedelta(seconds=1)
+    candidates_per_frame = []
+    for i in range(20):                     # 20 frames @ 5 FPS = 4 seconds of absence
+        ts = start + timedelta(seconds=i * 0.2)
+        candidates_per_frame.append(gate.process_frame(_det(ts, [], person=False)))
+
+    # Exactly one frame produces a candidate; the other 19 are silent
+    nonempty = [c for c in candidates_per_frame if c]
+    assert len(nonempty) == 1
+    assert nonempty[0][0].kind == CandidateKind.KITCHEN_ABANDONED
 
 
 # --- Audit-trail invariant ----------------------------------------------

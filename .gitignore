@@ -2,6 +2,8 @@
 node_modules/
 dist/
 .npm-cache/
+.vite/
+*.tsbuildinfo
 
 # --- Python bytecode & caches ---
 __pycache__/
@@ -29,8 +31,22 @@ coverage.xml
 *.egg-info/
 build/
 
+# --- Secrets & local config ---
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# --- Logs ---
+*.log
+logs/
+
 # --- OS / editor ---
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
 
 # --- Runtime data (JSONL audit trail, face embeddings, etc.) ---
 home-server/storage/

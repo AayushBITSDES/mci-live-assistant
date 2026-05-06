@@ -70,12 +70,14 @@ class TriggerGate:
         state = self._context.state
 
         # Kitchen abandonment
+        # Gate the candidate behind the open-window check too: at 5 FPS once
+        # the threshold is crossed, the rule fires every frame; without this
+        # guard the LLM dispatcher would burn ~300 calls per 60s of absence.
         kitchen_candidate = kitchen_abandoned_rule(detection, state, now=detection.timestamp)
-        if kitchen_candidate is not None:
+        if kitchen_candidate is not None and not self._has_open_window(state, CandidateKind.KITCHEN_ABANDONED.value):
             candidates.append(kitchen_candidate)
-            if not self._has_open_window(state, CandidateKind.KITCHEN_ABANDONED.value):
-                event = open_risk_window_event(CandidateKind.KITCHEN_ABANDONED.value, now=detection.timestamp)
-                self._record_and_emit(event)
+            event = open_risk_window_event(CandidateKind.KITCHEN_ABANDONED.value, now=detection.timestamp)
+            self._record_and_emit(event)
 
         # Medication: only check after enough consecutive bottle frames so
         # that someone walking past does not trigger.

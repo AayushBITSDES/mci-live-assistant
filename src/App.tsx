@@ -14,7 +14,24 @@ import { useWebSocket } from "./lib/useWebSocket";
 
 const DEFAULT_WS_URL = "ws://localhost:8000/ws/stream";
 const TARGET_FPS = 5;
-const DEVICE_ID = "edge-" + Math.random().toString(36).slice(2, 10);
+
+// Stable per-device ID, persisted in localStorage so a page reload
+// keeps the same identity. Future phases (face embeddings, session
+// continuity, per-device event history) will key on this.
+const DEVICE_ID = (() => {
+  const KEY = "mci_device_id";
+  try {
+    const existing = window.localStorage.getItem(KEY);
+    if (existing) return existing;
+    const fresh = "edge-" + Math.random().toString(36).slice(2, 10);
+    window.localStorage.setItem(KEY, fresh);
+    return fresh;
+  } catch {
+    // localStorage can throw in private mode / SSR; fall back to a
+    // session-scoped ID so the app still works.
+    return "edge-" + Math.random().toString(36).slice(2, 10);
+  }
+})();
 
 function App() {
   const [surface, setSurface] = useState<SurfaceMode>(() => detectSurface());
