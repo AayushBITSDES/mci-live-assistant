@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import math
+import os
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -82,9 +83,18 @@ class FaceRecognizer:
             self._save_store_locked()
 
     def _save_store_locked(self) -> None:
+        # Atomic write: serialise to a sibling .tmp on the same filesystem,
+        # flush + fsync so the bytes are on disk, then os.replace() to swap
+        # in place. A crash mid-write leaves the original store intact —
+        # without this, a partial JSON file would be silently discarded by
+        # _load_store() on the next start, dropping every enrolled face.
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._store_path.open("w", encoding="utf-8") as f:
+        tmp_path = self._store_path.with_suffix(self._store_path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
             json.dump(self._embeddings, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, self._store_path)
 
     # --- Public API --------------------------------------------------------
 
