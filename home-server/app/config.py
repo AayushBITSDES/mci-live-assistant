@@ -12,10 +12,14 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Always resolve `.env` next to the `home-server/` package root so keys load
+# correctly whether you start uvicorn from `home-server/` or the repo root.
+_HOME_SERVER_ROOT = Path(__file__).resolve().parent.parent
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_HOME_SERVER_ROOT / ".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",

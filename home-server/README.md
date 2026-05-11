@@ -22,7 +22,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ### Run the Streamlit dashboard (separate terminal)
 ```bash
-streamlit run dashboard/app.py --server.port 8501
+streamlit run dashboard/streamlit_app.py --server.port 8501
 ```
 
 Open:
@@ -40,13 +40,17 @@ Open:
 
 This matches the Notion Design Decisions exactly (mic always-on, TTS primary output, voice primary dismissal).
 
-## Environment Variables (.env)
+## Environment variables (`.env`)
+
+Secrets and local tuning live in **`home-server/.env`** (gitignored). Never commit that file.
+
+```bash
+cd home-server
+cp .env.example .env
+# Edit .env — set XAI_API_KEY and/or GOOGLE_API_KEY, etc.
 ```
-XAI_API_KEY=your_xai_key_here
-HOME_SERVER_URL=ws://your-pc-ip:8000/ws/stream
-WHISPER_MODEL=small          # tiny, small, medium, large
-TTS_VOICE=en_US-amy-medium   # for Piper if used
-```
+
+See **`.env.example`** for every key `Settings` understands. Paths in `.env` are relative to `home-server/` unless you use absolute paths.
 
 ## Known Relatives Face DB
 Drop photos in `storage/faces/<Person Name>/` (multiple angles, lighting, with/without glasses recommended – 5–10 photos per person is enough).
