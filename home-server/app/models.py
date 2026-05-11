@@ -43,6 +43,15 @@ class StatusMessage(BaseModel):
     camera_active: bool
 
 
+class DemoActionMessage(BaseModel):
+    """Edge UI feedback for exhibition nudges."""
+    type: Literal["demo_action"] = "demo_action"
+    device_id: str
+    action: Literal["nudge_closed", "nudge_auto_dismiss"]
+    nudge_id: Optional[str] = None
+    scenario: Optional[str] = None
+
+
 # --- Server -> Edge ---
 
 class NudgePriority(str, Enum):
@@ -77,3 +86,17 @@ class VoiceCommandMessage(BaseModel):
     tool: Optional[str] = None
     raw: str = ""
     provider: str
+
+
+class AssistantReplyMessage(BaseModel):
+    """A short spoken/text response for natural user conversation."""
+    type: Literal["assistant_reply"] = "assistant_reply"
+    sentence: str
+
+
+class EdgeControlMessage(BaseModel):
+    """Backend request for the edge to toggle browser-owned media streams."""
+    type: Literal["edge_control"] = "edge_control"
+    target: Literal["mic", "camera"]
+    action: Literal["on", "off"]
+    reason: str = "voice_command"

@@ -26,7 +26,7 @@ button, input, select { font: inherit; }
 
 .app {
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto auto 1fr auto;
   gap: 12px;
   height: 100vh;
   padding: 16px;
@@ -92,6 +92,42 @@ button, input, select { font: inherit; }
 
 .status-pill.live { background: #1e3a1e; color: #aaffaa; border-color: #2a5a2a; }
 .status-pill.fail { background: #3a1e1e; color: #ffaaaa; border-color: #5a2a2a; }
+
+/* --- Onboarding ------------------------------------------------------- */
+
+.onboarding-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: #15161a;
+  border: 1px solid #2a2c30;
+  border-radius: 10px;
+}
+
+.onboarding-strip label {
+  font-size: 13px;
+  opacity: 0.78;
+}
+
+.onboarding-strip input {
+  flex: 1;
+  min-width: 180px;
+  padding: 8px 10px;
+  color: inherit;
+  background: #1c1d20;
+  border: 1px solid #2a2c30;
+  border-radius: 8px;
+}
+
+.onboarding-strip button {
+  padding: 8px 12px;
+  color: inherit;
+  background: #2a2c30;
+  border: 1px solid #3a3c40;
+  border-radius: 8px;
+  cursor: pointer;
+}
 
 /* --- Surface switcher ------------------------------------------------- */
 
@@ -221,6 +257,31 @@ button, input, select { font: inherit; }
 
 .nudge-icon { font-size: 18px; }
 .nudge-text { font-size: 16px; line-height: 1.35; flex: 1; }
+
+.nudge-close {
+  padding: 6px 10px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.assistant-reply {
+  position: absolute;
+  left: 24px;
+  bottom: 24px;
+  width: min(420px, calc(100% - 48px));
+  padding: 12px 14px;
+  color: #e9f5ff;
+  background: rgba(13, 24, 34, 0.86);
+  border: 1px solid rgba(126, 203, 255, 0.28);
+  border-radius: 12px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+  font-size: 15px;
+  line-height: 1.35;
+}
 
 @keyframes nudge-in {
   from { opacity: 0; transform: translateY(12px); }

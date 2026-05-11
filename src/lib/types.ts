@@ -12,6 +12,7 @@ export interface NudgeMessage {
   priority: NudgePriority;
   audio_b64?: string | null;
   auto_dismiss_seconds: number;
+  scenario?: string;
 }
 
 export interface AckMessage {
@@ -28,7 +29,25 @@ export interface VoiceCommandMessage {
   provider: string;
 }
 
-export type ServerMessage = NudgeMessage | AckMessage | VoiceCommandMessage;
+export interface AssistantReplyMessage {
+  type: "assistant_reply";
+  sentence: string;
+  ts?: number;
+}
+
+export interface EdgeControlMessage {
+  type: "edge_control";
+  target: "mic" | "camera";
+  action: "on" | "off";
+  reason?: string;
+}
+
+export type ServerMessage =
+  | NudgeMessage
+  | AckMessage
+  | VoiceCommandMessage
+  | AssistantReplyMessage
+  | EdgeControlMessage;
 
 export interface FrameMessage {
   type: "frame";
@@ -56,8 +75,17 @@ export interface AudioChunkMessage {
   duration_ms: number;
 }
 
+export interface DemoActionMessage {
+  type: "demo_action";
+  device_id: string;
+  action: "nudge_closed" | "nudge_auto_dismiss";
+  nudge_id?: string;
+  scenario?: string;
+}
+
 export type ClientMessage =
   | FrameMessage
   | StatusMessage
   | AudioChunkMessage
+  | DemoActionMessage
   | { type: "ping" };

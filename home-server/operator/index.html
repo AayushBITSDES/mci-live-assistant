@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCI Operator</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; background: #0f1115; color: #f4f1ea; }
+    main { max-width: 880px; margin: 0 auto; padding: 32px; }
+    h1 { margin: 0 0 8px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-top: 20px; }
+    .card { padding: 16px; background: #171a20; border: 1px solid #2a2f3a; border-radius: 14px; }
+    label { display: block; margin-bottom: 8px; opacity: 0.78; }
+    input { width: 100%; padding: 10px; margin-bottom: 10px; color: inherit; background: #101217; border: 1px solid #303642; border-radius: 10px; }
+    button { display: block; width: 100%; margin: 8px 0; padding: 10px 14px; color: inherit; background: #2a2c30; border: 1px solid #3a3c40; border-radius: 10px; cursor: pointer; }
+    button:hover { background: #3a3c40; }
+    pre { min-height: 120px; padding: 12px; overflow: auto; background: #090a0d; border: 1px solid #272b33; border-radius: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Operator Console</h1>
+    <p>Use this hidden page to keep the exhibition flow reliable.</p>
+
+    <section class="grid">
+      <div class="card">
+        <label for="visitor">Visitor name</label>
+        <input id="visitor" value="Shanta">
+        <button data-event="visitor_name">Save visitor name</button>
+      </div>
+
+      <div class="card">
+        <h2>Medicine</h2>
+        <button data-event="medicine_pending">Trigger vitamin reminder</button>
+        <button data-event="voice_tool" data-tool="markDone" data-task="vitamin">Mark vitamin done</button>
+      </div>
+
+      <div class="card">
+        <h2>Stove</h2>
+        <button data-event="stove_on">Stove is on</button>
+        <button data-event="stove_ignored" data-reason="operator_ignore">Count ignored reminder</button>
+      </div>
+
+      <div class="card">
+        <h2>Face cue</h2>
+        <label for="face-name">Person name</label>
+        <input id="face-name" value="Aayush">
+        <button data-event="face_cue">Send face cue</button>
+      </div>
+    </section>
+
+    <h2>Last response</h2>
+    <pre id="log">Ready.</pre>
+  </main>
+  <script>
+    const logEl = document.getElementById("log");
+    const visitorEl = document.getElementById("visitor");
+    const faceNameEl = document.getElementById("face-name");
+
+    document.addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-event]");
+      if (!button) return;
+      const name = button.dataset.event;
+      const payload = { event: name };
+
+      if (name === "visitor_name") payload.name = visitorEl.value;
+      if (name === "face_cue") payload.name = faceNameEl.value;
+      if (name === "stove_ignored") payload.reason = button.dataset.reason || "operator";
+      if (name === "voice_tool") {
+        payload.tool = button.dataset.tool;
+        payload.arguments = { task: button.dataset.task };
+      }
+
+      const response = await fetch("/demo/operator/event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        logEl.textContent = `Request failed: ${response.status}`;
+        return;
+      }
+      const body = await response.json();
+      logEl.textContent = JSON.stringify(body, null, 2);
+    });
+  </script>
+</body>
+</html>

@@ -105,6 +105,23 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["state"],
         },
     },
+    {
+        "name": "assistantReply",
+        "description": (
+            "Reply naturally to a short user question or comment that is not a command. "
+            "Use for questions like 'who is that?', 'what was I doing?', or 'why are you reminding me?'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sentence": {
+                    "type": "string",
+                    "description": "One short sentence to show and speak back to the user.",
+                },
+            },
+            "required": ["sentence"],
+        },
+    },
 ]
 
 

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MCI Caregiver</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; background: #101114; color: #f4f1ea; }
+    main { max-width: 760px; margin: 0 auto; padding: 32px; }
+    h1 { margin: 0 0 8px; }
+    .status { margin: 16px 0; opacity: 0.78; }
+    .alert { padding: 20px; margin: 16px 0; border: 1px solid #ff8a8a; border-left: 4px solid #ff5c5c; border-radius: 14px; background: #2b1417; }
+    .alert h2 { margin: 0 0 8px; }
+    button { padding: 10px 14px; border: 1px solid #555; border-radius: 10px; color: inherit; background: #2a2c30; cursor: pointer; }
+    button:hover { background: #3a3c40; }
+    small { display: block; margin-top: 10px; opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Caregiver App</h1>
+    <p class="status" id="status">Connecting to backend...</p>
+    <section id="alerts"></section>
+  </main>
+  <script>
+    const statusEl = document.getElementById("status");
+    const alertsEl = document.getElementById("alerts");
+    const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/caregiver`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.addEventListener("open", () => {
+      statusEl.textContent = "Connected. Waiting for escalated stove alerts.";
+    });
+
+    ws.addEventListener("close", () => {
+      statusEl.textContent = "Disconnected. Refresh to reconnect.";
+    });
+
+    ws.addEventListener("message", (event) => {
+      let payload;
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (payload.type !== "caregiver_alert") return;
+      renderAlert(payload);
+    });
+
+    function renderAlert(alert) {
+      const card = document.createElement("article");
+      card.className = "alert";
+
+      const title = document.createElement("h2");
+      title.textContent = `Stove alert for ${alert.visitor_name || "the visitor"}`;
+      card.appendChild(title);
+
+      const message = document.createElement("p");
+      message.textContent = `The stove reminder has been ignored ${alert.ignored_count} times.`;
+      card.appendChild(message);
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Acknowledge";
+      button.addEventListener("click", async () => {
+        const response = await fetch(`/demo/caregiver/alerts/${encodeURIComponent(alert.alert_id)}/ack`, { method: "POST" });
+        if (!response.ok) {
+          button.textContent = "Ack failed";
+          return;
+        }
+        button.textContent = "Acknowledged";
+        button.disabled = true;
+      });
+      card.appendChild(button);
+
+      const time = document.createElement("small");
+      time.textContent = new Date((alert.ts || Date.now() / 1000) * 1000).toLocaleTimeString();
+      card.appendChild(time);
+
+      alertsEl.prepend(card);
+    }
+  </script>
+</body>
+</html>

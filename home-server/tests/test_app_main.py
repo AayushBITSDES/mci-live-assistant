@@ -343,6 +343,23 @@ def test_health_reports_mode_debug_stub_when_heavy_missing(
         assert app.state.heavy is None
 
 
+def test_cors_allows_lan_vite_origin(monkeypatch, tmp_path: Path) -> None:
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.options(
+            "/demo/operator/event",
+            headers={
+                "Origin": "http://192.168.1.42:5173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://192.168.1.42:5173"
+
+
 def test_ws_live_mode_audio_chunk_dispatches_mark_done(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -403,6 +420,88 @@ def test_ws_live_mode_audio_chunk_dispatches_mark_done(
     assert "task_marked_done" in event_kinds
 
 
+def test_ws_live_mode_audio_toggle_camera_sends_edge_control(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Voice privacy commands should become real edge controls, not just logs."""
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    monkeypatch.setattr("context.event_log.settings", test_settings)
+
+    fake_heavy = Heavy(
+        processor=_RecordingProcessor([]),       # type: ignore[arg-type]
+        llm=_RecordingLLM(
+            sentence="(no frames in this test)",
+            voice_tool=ToolCall(name="toggleCamera", arguments={"state": "off"}),
+        ),                                      # type: ignore[arg-type]
+        tts=None,
+        whisper=_StubWhisper("camera off"),     # type: ignore[arg-type]
+    )
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.heavy = fake_heavy
+        with client.websocket_connect("/ws/stream?device_id=privacy-test") as ws:
+            ws.send_text(json.dumps({
+                "type": "audio",
+                "device_id": "privacy-test",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "audio_b64": base64.b64encode(b"\x00\x01\x02 fake-webm").decode("ascii"),
+                "sample_rate": 16000,
+                "duration_ms": 3000,
+            }))
+            voice_payload = json.loads(ws.receive_text())
+            ws.send_text(json.dumps({"type": "ping"}))
+            control_payload = json.loads(ws.receive_text())
+
+    assert voice_payload["type"] == "voice_command"
+    assert voice_payload["tool"] == "toggleCamera"
+    assert control_payload["type"] == "edge_control"
+    assert control_payload["target"] == "camera"
+    assert control_payload["action"] == "off"
+
+
+def test_ws_live_mode_audio_assistant_reply_sends_reply_message(
+    monkeypatch, tmp_path: Path
+) -> None:
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    monkeypatch.setattr("context.event_log.settings", test_settings)
+
+    fake_heavy = Heavy(
+        processor=_RecordingProcessor([]),       # type: ignore[arg-type]
+        llm=_RecordingLLM(
+            sentence="(no frames in this test)",
+            voice_tool=ToolCall(
+                name="assistantReply",
+                arguments={"sentence": "That is Aayush; ask him about the headset."},
+            ),
+        ),                                      # type: ignore[arg-type]
+        tts=None,
+        whisper=_StubWhisper("who is that"),    # type: ignore[arg-type]
+    )
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.heavy = fake_heavy
+        with client.websocket_connect("/ws/stream?device_id=reply-test") as ws:
+            ws.send_text(json.dumps({
+                "type": "audio",
+                "device_id": "reply-test",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "audio_b64": base64.b64encode(b"\x00\x01\x02 fake-webm").decode("ascii"),
+                "sample_rate": 16000,
+                "duration_ms": 3000,
+            }))
+            voice_payload = json.loads(ws.receive_text())
+            reply_payload = json.loads(ws.receive_text())
+
+    assert voice_payload["type"] == "voice_command"
+    assert voice_payload["tool"] == "assistantReply"
+    assert reply_payload["type"] == "assistant_reply"
+    assert "Aayush" in reply_payload["sentence"]
+
+
 def test_ws_audio_ignored_in_debug_stub_mode(monkeypatch, tmp_path: Path) -> None:
     """Without a Session (no Heavy), audio is parsed-and-discarded silently —
     no crash, no nudge, no audit-log noise."""
@@ -425,3 +524,69 @@ def test_ws_audio_ignored_in_debug_stub_mode(monkeypatch, tmp_path: Path) -> Non
             data = ws.receive_text()
             payload = json.loads(data)
             assert payload["type"] == "ack" and payload["message"] == "pong"
+
+
+# --- Exhibition demo routes ----------------------------------------------
+
+def test_demo_operator_medicine_event_returns_named_nudge(
+    monkeypatch, tmp_path: Path
+) -> None:
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    monkeypatch.setattr("context.event_log.settings", test_settings)
+    app = create_app()
+
+    with TestClient(app) as client:
+        client.post("/demo/operator/event", json={"event": "visitor_name", "name": "Maya"})
+        response = client.post("/demo/operator/event", json={"event": "medicine_pending"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["messages"][0]["type"] == "nudge"
+    assert "Maya" in body["messages"][0]["sentence"]
+    assert "vitamin" in body["messages"][0]["sentence"].lower()
+
+
+def test_demo_stove_third_ignore_pushes_caregiver_alert_and_acknowledges(
+    monkeypatch, tmp_path: Path
+) -> None:
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    monkeypatch.setattr("context.event_log.settings", test_settings)
+    app = create_app()
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/caregiver") as caregiver:
+            client.post("/demo/operator/event", json={"event": "visitor_name", "name": "Shanta"})
+            client.post("/demo/operator/event", json={"event": "stove_on"})
+            client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "later"})
+            client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "closed"})
+            response = client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "silent"})
+
+            pushed = json.loads(caregiver.receive_text())
+            alert_id = pushed["alert_id"]
+            ack = client.post(f"/demo/caregiver/alerts/{alert_id}/ack")
+
+    assert response.status_code == 200
+    assert pushed["type"] == "caregiver_alert"
+    assert pushed["risk_type"] == "stove_on"
+    assert pushed["visitor_name"] == "Shanta"
+    assert pushed["ignored_count"] == 3
+    assert ack.status_code == 200
+    assert ack.json()["type"] == "caregiver_ack"
+
+
+def test_demo_html_apps_are_served(monkeypatch, tmp_path: Path) -> None:
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    monkeypatch.setattr("context.event_log.settings", test_settings)
+    app = create_app()
+
+    with TestClient(app) as client:
+        caregiver = client.get("/caregiver")
+        operator = client.get("/operator")
+
+    assert caregiver.status_code == 200
+    assert "Caregiver" in caregiver.text
+    assert operator.status_code == 200
+    assert "Operator" in operator.text

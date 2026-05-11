@@ -441,6 +441,7 @@ class Session:
             "closeForever": self._dispatch_close_forever,
             "toggleMic": self._dispatch_toggle_log_only,
             "toggleCamera": self._dispatch_toggle_log_only,
+            "assistantReply": self._dispatch_assistant_reply_log_only,
         }
         handler = handlers.get(tool.name)
         if handler is None:
@@ -533,6 +534,13 @@ class Session:
         return [{
             "event_type": "kill_switch_voice_request",
             "requested_state": str(args.get("state", "")).strip(),
+            "timestamp": self._now_iso(),
+        }]
+
+    def _dispatch_assistant_reply_log_only(self, args: dict) -> list[dict]:
+        return [{
+            "event_type": "assistant_reply_requested",
+            "sentence": str(args.get("sentence", "")).strip(),
             "timestamp": self._now_iso(),
         }]
 

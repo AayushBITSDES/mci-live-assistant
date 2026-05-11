@@ -43,6 +43,7 @@ Rules:
 - "never tell me again" / "stop reminding me about X" → closeForever
 - "mic off" / "turn mic off" → toggleMic with state=off
 - "camera off" / "turn camera off" → toggleCamera with state=off
+- Casual questions or comments like "who is that?", "what was I doing?", or "why are you reminding me?" → assistantReply with one short sentence
 
 Be conservative with closeForever — only use it when the user is unambiguous.
 """.strip()

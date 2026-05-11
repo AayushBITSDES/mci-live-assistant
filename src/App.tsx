@@ -37,7 +37,15 @@ const DEVICE_ID = (() => {
 function App() {
   const [surface, setSurface] = useState<SurfaceMode>(() => detectSurface());
   const [wsUrl, setWsUrl] = useState(DEFAULT_WS_URL);
+  const [visitorName, setVisitorName] = useState(() => {
+    try {
+      return window.localStorage.getItem("mci_visitor_name") ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraEnabled, setCameraEnabled] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [micActive, setMicActive] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
@@ -59,7 +67,7 @@ function App() {
 
   // Start/stop camera in lockstep with the connection.
   useEffect(() => {
-    if (!isConnected) {
+    if (!isConnected || !cameraEnabled) {
       stopCamera(streamRef.current, videoRef.current);
       streamRef.current = null;
       setCameraActive(false);
@@ -85,7 +93,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [isConnected]);
+  }, [isConnected, cameraEnabled]);
 
   // Frame loop — captures a JPEG every 1/FPS seconds while connected.
   useEffect(() => {
@@ -119,6 +127,25 @@ function App() {
       playChimeAndSpeak(state.lastNudge.sentence);
     }
   }, [state.lastNudge, audioEnabled]);
+
+  // Speak natural assistant replies (voice conversation / face cues).
+  useEffect(() => {
+    if (!audioEnabled || !state.lastAssistantReply) return;
+    playChimeAndSpeak(state.lastAssistantReply.sentence);
+  }, [state.lastAssistantReply, audioEnabled]);
+
+  // Backend voice tools request actual media toggles on the browser edge.
+  useEffect(() => {
+    const control = state.lastControl;
+    if (!control) return;
+    const enabled = control.action === "on";
+    if (control.target === "mic") {
+      setMicError(null);
+      setMicActive(enabled);
+    } else if (control.target === "camera") {
+      setCameraEnabled(enabled);
+    }
+  }, [state.lastControl]);
 
   // Mic capture loop. When (connected && micActive), start rolling
   // utterance capture; each completed ~3-second blob is sent as an
@@ -194,16 +221,31 @@ function App() {
 
   const handleConnect = useCallback(() => {
     connect(wsUrl, DEVICE_ID, surface);
-  }, [connect, wsUrl, surface]);
+    if (visitorName.trim()) {
+      try {
+        window.localStorage.setItem("mci_visitor_name", visitorName.trim());
+      } catch {
+        // ignore localStorage failures
+      }
+      void postDemoEvent(wsUrl, { event: "visitor_name", name: visitorName.trim() })
+        .catch((err) => console.warn("[demo] visitor_name failed:", err));
+    }
+  }, [connect, wsUrl, surface, visitorName]);
 
   const handleDisconnect = useCallback(() => {
     disconnect();
   }, [disconnect]);
 
-  const handleNudgeDismiss = useCallback(() => {
-    // Phase 9 leaves dismissal as a no-op; voice command handler lands
-    // when ASR is wired in (Phase 5 deployment).
-  }, []);
+  const handleNudgeDismiss = useCallback((action: "nudge_closed" | "nudge_auto_dismiss") => {
+    if (!state.lastNudge) return;
+    send({
+      type: "demo_action",
+      device_id: DEVICE_ID,
+      action,
+      nudge_id: state.lastNudge.nudge_id,
+      scenario: state.lastNudge.scenario,
+    });
+  }, [send, state.lastNudge]);
 
   const surfaceClass = useMemo(() => `app surface-${surface}`, [surface]);
 
@@ -225,6 +267,31 @@ function App() {
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
       />
+
+      <form
+        className="onboarding-strip"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const cleaned = visitorName.trim();
+          if (!cleaned) return;
+          try {
+            window.localStorage.setItem("mci_visitor_name", cleaned);
+          } catch {
+            // ignore localStorage failures
+          }
+          void postDemoEvent(wsUrl, { event: "visitor_name", name: cleaned })
+            .catch((err) => console.warn("[demo] visitor_name failed:", err));
+        }}
+      >
+        <label htmlFor="visitor-name">Visitor name</label>
+        <input
+          id="visitor-name"
+          value={visitorName}
+          onChange={(event) => setVisitorName(event.target.value)}
+          placeholder="What should I call you?"
+        />
+        <button type="submit">Save</button>
+      </form>
 
       <main className="stage">
         <video
@@ -263,6 +330,12 @@ function App() {
           {micError && <span className="mic-error">{micError}</span>}
         </div>
 
+        {state.lastAssistantReply && (
+          <div className="assistant-reply" role="status" aria-live="polite">
+            {state.lastAssistantReply.sentence}
+          </div>
+        )}
+
         <NudgeOverlay nudge={state.lastNudge} onDismiss={handleNudgeDismiss} />
       </main>
 
@@ -281,6 +354,27 @@ function detectSurface(): SurfaceMode {
   if (ua.includes("oculus") || ua.includes("quest")) return "quest";
   if (ua.includes("mobile") || ua.includes("iphone") || ua.includes("android")) return "mobile";
   return "desktop";
+}
+
+function postDemoEvent(wsUrl: string, payload: Record<string, unknown>): Promise<void> {
+  const url = httpUrlFor(wsUrl, "/demo/operator/event");
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then((response) => {
+    if (!response.ok) {
+      throw new Error(`Demo event failed: ${response.status}`);
+    }
+  });
+}
+
+function httpUrlFor(wsUrl: string, path: string): string {
+  const url = new URL(wsUrl);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.pathname = path;
+  url.search = "";
+  return url.toString();
 }
 
 export default App;
