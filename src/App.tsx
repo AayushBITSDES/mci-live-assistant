@@ -1,425 +1,185 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { autoDismiss, closeForever, dismissTemporarily, evaluateNudge, flagWrong, markDone } from "./engine/nudgeEngine";
-import { defaultScenarioId, scenarios } from "./engine/scenarios";
-import type { AssistantSettings, NudgeDecision, ScenarioId, ScenarioRuntime, SurfaceMode } from "./engine/types";
-import { playChimeAndSpeak } from "./lib/audio";
-import { defaultRuntime, loadRuntime, loadSettings, saveRuntime, saveSettings } from "./lib/storage";
+// MCI Edge Client — thin client that streams camera frames to the home
+// server and renders nudges it sends back. No on-device ML, no scenarios,
+// no engine: this is the dumb end of the rope.
 
-const scenarioList = Object.values(scenarios);
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ConnectionBar } from "./components/ConnectionBar";
+import { NudgeOverlay } from "./components/NudgeOverlay";
+import { PrivacyDot } from "./components/PrivacyDot";
+import { SurfaceSwitcher } from "./components/SurfaceSwitcher";
+import { playChimeAndAudioB64, playChimeAndSpeak } from "./lib/audio";
+import { captureFrameJpeg, startCamera, stopCamera } from "./lib/camera";
+import type { SurfaceMode } from "./lib/types";
+import { useWebSocket } from "./lib/useWebSocket";
+
+const DEFAULT_WS_URL = "ws://localhost:8000/ws/stream";
+const TARGET_FPS = 5;
+
+// Stable per-device ID, persisted in localStorage so a page reload
+// keeps the same identity. Future phases (face embeddings, session
+// continuity, per-device event history) will key on this.
+const DEVICE_ID = (() => {
+  const KEY = "mci_device_id";
+  try {
+    const existing = window.localStorage.getItem(KEY);
+    if (existing) return existing;
+    const fresh = "edge-" + Math.random().toString(36).slice(2, 10);
+    window.localStorage.setItem(KEY, fresh);
+    return fresh;
+  } catch {
+    // localStorage can throw in private mode / SSR; fall back to a
+    // session-scoped ID so the app still works.
+    return "edge-" + Math.random().toString(36).slice(2, 10);
+  }
+})();
 
 function App() {
-  const [surface, setSurface] = useState<SurfaceMode>(() => getInitialSurface());
-  const [settings, setSettings] = useState<AssistantSettings>(() => loadSettings());
-  const [runtime, setRuntime] = useState<ScenarioRuntime>(() => {
-    const stored = loadRuntime();
-    return scenarios[stored.scenarioId] ? stored : defaultRuntime;
-  });
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [voiceCommand, setVoiceCommand] = useState("");
-  const [now, setNow] = useState(Date.now());
-  const [xrSupported, setXrSupported] = useState(false);
-  const [xrStatus, setXrStatus] = useState("Quest AR is available over HTTPS in the Quest browser.");
-  const spokenNudgeKey = useRef("");
+  const [surface, setSurface] = useState<SurfaceMode>(() => detectSurface());
+  const [wsUrl, setWsUrl] = useState(DEFAULT_WS_URL);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [audioEnabled, setAudioEnabled] = useState(true);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => saveSettings(settings), [settings]);
-  useEffect(() => saveRuntime(runtime), [runtime]);
-
-  useEffect(() => {
-    if (!navigator.xr) {
-      return;
-    }
-
-    navigator.xr
-      .isSessionSupported("immersive-ar")
-      .then(setXrSupported)
-      .catch(() => setXrSupported(false));
-  }, []);
-
-  const scenario = scenarios[runtime.scenarioId];
-  const step = scenario.steps[runtime.stepIndex];
-  const decision = useMemo(() => evaluateNudge(runtime, now), [runtime, now]);
-  const nudgeVisible = settings.visualEnabled && decision.shouldNudge;
-
-  useEffect(() => {
-    if (!decision.shouldNudge || !settings.audioEnabled) {
-      return;
-    }
-
-    const nudgeKey = `${runtime.scenarioId}:${runtime.stepIndex}:${runtime.snoozedUntil ?? 0}`;
-    if (spokenNudgeKey.current === nudgeKey) {
-      return;
-    }
-
-    spokenNudgeKey.current = nudgeKey;
-    playChimeAndSpeak(decision.sentence);
-  }, [decision, runtime, settings.audioEnabled]);
-
-  useEffect(() => {
-    if (!nudgeVisible) {
-      return;
-    }
-
-    const timeout = window.setTimeout(() => {
-      setRuntime((current) => autoDismiss(current));
-    }, settings.nudgeDurationSeconds * 1000);
-
-    return () => window.clearTimeout(timeout);
-  }, [nudgeVisible, settings.nudgeDurationSeconds, runtime.scenarioId, runtime.stepIndex, runtime.snoozedUntil]);
-
-  function updateSetting<Key extends keyof AssistantSettings>(key: Key, value: AssistantSettings[Key]) {
-    setSettings((current) => ({ ...current, [key]: value }));
-  }
-
-  function resetScenario(scenarioId: ScenarioId = runtime.scenarioId) {
-    setRuntime({
-      ...defaultRuntime,
-      scenarioId
-    });
-    spokenNudgeKey.current = "";
-  }
-
-  function setScenario(scenarioId: ScenarioId) {
-    resetScenario(scenarioId);
-    setSurface(scenarios[scenarioId].targetSurface);
-  }
-
-  function nextStep() {
-    setRuntime((current) => ({
-      ...current,
-      stepIndex: Math.min(scenarios[current.scenarioId].steps.length - 1, current.stepIndex + 1),
-      snoozedUntil: null
-    }));
-  }
-
-  function previousStep() {
-    setRuntime((current) => ({
-      ...current,
-      stepIndex: Math.max(0, current.stepIndex - 1),
-      snoozedUntil: null
-    }));
-  }
-
-  function applyVoiceCommand(rawCommand: string) {
-    const command = rawCommand.trim().toLowerCase();
-    if (!command) {
-      return;
-    }
-
-    if (["done", "completed", "i did it", "it is done"].includes(command)) {
-      setRuntime((current) => markDone(current));
-    } else if (command.includes("remind")) {
-      setRuntime((current) => dismissTemporarily(current));
-    } else if (command.includes("close") || command.includes("forever")) {
-      setRuntime((current) => closeForever(current));
-    } else if (command.includes("wrong") || command.includes("flag")) {
-      setRuntime((current) => flagWrong(current));
-    } else if (command.includes("settings")) {
-      setSettingsOpen(true);
-    }
-
-    setVoiceCommand("");
-  }
-
-  async function startQuestAr() {
-    if (!navigator.xr) {
-      setXrStatus("WebXR is not exposed in this browser.");
-      return;
-    }
-
-    try {
-      await navigator.xr.requestSession("immersive-ar", {
-        optionalFeatures: ["dom-overlay"],
-        domOverlay: { root: document.body }
-      });
-      setXrStatus("Quest AR session started. The overlay remains anchored to the browser DOM.");
-    } catch (error) {
-      setXrStatus(error instanceof Error ? error.message : "Quest AR session could not start.");
-    }
-  }
-
-  return (
-    <main className={`app surface-${surface}`}>
-      <SurfaceView surface={surface} settings={settings} xrSupported={xrSupported} xrStatus={xrStatus} onStartQuestAr={startQuestAr} />
-
-      <div className="hud-layer" aria-live="polite">
-        <PrivacyDot cameraActive={settings.cameraActive} micActive={settings.micActive} />
-
-        {nudgeVisible ? (
-          <NudgeOverlay
-            decision={decision}
-            onDone={() => setRuntime((current) => markDone(current))}
-            onSnooze={() => setRuntime((current) => dismissTemporarily(current))}
-            onCloseForever={() => setRuntime((current) => closeForever(current))}
-            onFlagWrong={() => setRuntime((current) => flagWrong(current))}
-          />
-        ) : (
-          <AmbientIndicator />
-        )}
-
-        {settingsOpen ? <SettingsPanel settings={settings} onChange={updateSetting} onClose={() => setSettingsOpen(false)} /> : null}
-      </div>
-
-      <aside className="control-dock" aria-label="Prototype controls">
-        <div className="dock-row">
-          {(["desktop", "mobile", "quest"] as SurfaceMode[]).map((mode) => (
-            <button key={mode} className={surface === mode ? "selected" : ""} onClick={() => setSurface(mode)}>
-              {mode}
-            </button>
-          ))}
-        </div>
-
-        <label className="field-label">
-          Scenario
-          <select value={runtime.scenarioId} onChange={(event) => setScenario(event.target.value as ScenarioId)}>
-            {scenarioList.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.code} - {item.title}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <section className="scenario-card">
-          <div className="scenario-header">
-            <span>{scenario.code}</span>
-            <strong>{scenario.persona}</strong>
-          </div>
-          <h1>{scenario.title}</h1>
-          <p>{scenario.summary}</p>
-          <div className="step-meter">
-            {scenario.steps.map((item, index) => (
-              <button
-                key={item.id}
-                className={index === runtime.stepIndex ? "active" : ""}
-                aria-label={`Go to step ${index + 1}: ${item.title}`}
-                onClick={() => setRuntime((current) => ({ ...current, stepIndex: index, snoozedUntil: null }))}
-              />
-            ))}
-          </div>
-        </section>
-
-        <section className="signal-card">
-          <span className="eyebrow">Current signal</span>
-          <h2>{step.title}</h2>
-          <p>{step.ambientDetail}</p>
-          <div className="risk-line">
-            <span>Risk</span>
-            <meter min={0} max={1} value={step.riskScore} />
-            <strong>{Math.round(step.riskScore * 100)}%</strong>
-          </div>
-          <p className="reason">{decision.reason}</p>
-        </section>
-
-        <div className="dock-row">
-          <button onClick={previousStep}>Back</button>
-          <button onClick={nextStep}>Advance</button>
-          <button onClick={() => resetScenario()}>Reset</button>
-        </div>
-
-        <form
-          className="voice-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            applyVoiceCommand(voiceCommand);
-          }}
-        >
-          <label className="field-label">
-            Voice-style command
-            <input
-              value={voiceCommand}
-              placeholder="done, remind me later, settings..."
-              onChange={(event) => setVoiceCommand(event.target.value)}
-            />
-          </label>
-          <button type="submit">Apply</button>
-        </form>
-
-        <button className="settings-button" onClick={() => setSettingsOpen(true)}>
-          Settings
-        </button>
-      </aside>
-    </main>
-  );
-}
-
-function SurfaceView({
-  surface,
-  settings,
-  xrSupported,
-  xrStatus,
-  onStartQuestAr
-}: {
-  surface: SurfaceMode;
-  settings: AssistantSettings;
-  xrSupported: boolean;
-  xrStatus: string;
-  onStartQuestAr: () => void;
-}) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [cameraError, setCameraError] = useState("");
+  const streamRef = useRef<MediaStream | null>(null);
+  const lastSpokenIdRef = useRef<string | null>(null);
 
+  const { state, connect, disconnect, send } = useWebSocket();
+  const isConnected = state.status === "connected";
+
+  // Start/stop camera in lockstep with the connection.
   useEffect(() => {
-    if (surface !== "mobile" || !settings.cameraActive || !navigator.mediaDevices?.getUserMedia) {
+    if (!isConnected) {
+      stopCamera(streamRef.current, videoRef.current);
+      streamRef.current = null;
+      setCameraActive(false);
       return;
     }
+    if (!videoRef.current) return;
 
-    let stream: MediaStream | null = null;
-    navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: "environment" }, audio: false })
-      .then((nextStream) => {
-        stream = nextStream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+    let cancelled = false;
+    startCamera(videoRef.current)
+      .then((stream) => {
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
         }
+        streamRef.current = stream;
+        setCameraActive(true);
       })
-      .catch((error) => setCameraError(error instanceof Error ? error.message : "Camera could not start."));
+      .catch((err) => {
+        console.error("Camera error", err);
+        setCameraActive(false);
+      });
 
     return () => {
-      stream?.getTracks().forEach((track) => track.stop());
+      cancelled = true;
     };
-  }, [surface, settings.cameraActive]);
+  }, [isConnected]);
 
-  if (surface === "mobile") {
-    return (
-      <section className="surface-view mobile-view" aria-label="Mobile camera view">
-        {settings.cameraActive ? <video ref={videoRef} autoPlay playsInline muted /> : <div className="camera-off">Camera is off.</div>}
-        {cameraError ? <p className="camera-error">{cameraError}</p> : null}
-      </section>
-    );
-  }
+  // Frame loop — captures a JPEG every 1/FPS seconds while connected.
+  useEffect(() => {
+    if (!isConnected || !cameraActive) return;
+    const interval = window.setInterval(() => {
+      if (!videoRef.current) return;
+      const frame = captureFrameJpeg(videoRef.current);
+      if (!frame) return;
+      send({
+        type: "frame",
+        device_id: DEVICE_ID,
+        surface,
+        timestamp: new Date().toISOString(),
+        image_b64: frame.base64,
+        width: frame.width,
+        height: frame.height,
+      });
+    }, 1000 / TARGET_FPS);
+    return () => window.clearInterval(interval);
+  }, [isConnected, cameraActive, surface, send]);
 
-  if (surface === "quest") {
-    return (
-      <section className="surface-view quest-view" aria-label="Quest passthrough simulation">
-        <div className="room-horizon" />
-        <div className="counter-line" />
-        <button className="xr-button" disabled={!xrSupported} onClick={onStartQuestAr}>
-          Start Quest AR
-        </button>
-        <p>{xrStatus}</p>
-      </section>
-    );
-  }
+  // Play audio whenever a new nudge arrives.
+  useEffect(() => {
+    if (!audioEnabled || !state.lastNudge) return;
+    if (state.lastNudge.nudge_id === lastSpokenIdRef.current) return;
+    lastSpokenIdRef.current = state.lastNudge.nudge_id;
+
+    if (state.lastNudge.audio_b64) {
+      playChimeAndAudioB64(state.lastNudge.audio_b64);
+    } else {
+      playChimeAndSpeak(state.lastNudge.sentence);
+    }
+  }, [state.lastNudge, audioEnabled]);
+
+  const handleConnect = useCallback(() => {
+    connect(wsUrl, DEVICE_ID, surface);
+  }, [connect, wsUrl, surface]);
+
+  const handleDisconnect = useCallback(() => {
+    disconnect();
+  }, [disconnect]);
+
+  const handleNudgeDismiss = useCallback(() => {
+    // Phase 9 leaves dismissal as a no-op; voice command handler lands
+    // when ASR is wired in (Phase 5 deployment).
+  }, []);
+
+  const surfaceClass = useMemo(() => `app surface-${surface}`, [surface]);
 
   return (
-    <section className="surface-view desktop-view" aria-label="Desktop simulation">
-      <div className="calendar-strip">
-        <span>09:18</span>
-        <strong>Blood test at 10:00am</strong>
-      </div>
-      <div className="kitchen-scene">
-        <div className="window-panel" />
-        <div className="tea-cup" />
-        <div className="cabinet" />
-      </div>
-    </section>
-  );
-}
-
-function NudgeOverlay({
-  decision,
-  onDone,
-  onSnooze,
-  onCloseForever,
-  onFlagWrong
-}: {
-  decision: NudgeDecision;
-  onDone: () => void;
-  onSnooze: () => void;
-  onCloseForever: () => void;
-  onFlagWrong: () => void;
-}) {
-  return (
-    <section className={`nudge-overlay priority-${decision.priority}`}>
-      <p>{decision.sentence}</p>
-      <div className="nudge-actions">
-        <button onClick={onDone}>Done</button>
-        <button onClick={onSnooze}>Later</button>
-        <button onClick={onFlagWrong}>Wrong</button>
-        <button onClick={onCloseForever}>Close</button>
-      </div>
-    </section>
-  );
-}
-
-function PrivacyDot({ cameraActive, micActive }: { cameraActive: boolean; micActive: boolean }) {
-  const active = cameraActive || micActive;
-  return (
-    <div className={`privacy-dot ${active ? "active" : "inactive"}`} title={active ? "Camera or microphone active" : "Camera and microphone off"}>
-      <span />
-    </div>
-  );
-}
-
-function AmbientIndicator() {
-  return (
-    <div className="ambient-indicator" aria-label="Assistant active and silent">
-      <span />
-    </div>
-  );
-}
-
-function SettingsPanel({
-  settings,
-  onChange,
-  onClose
-}: {
-  settings: AssistantSettings;
-  onChange: <Key extends keyof AssistantSettings>(key: Key, value: AssistantSettings[Key]) => void;
-  onClose: () => void;
-}) {
-  return (
-    <section className="settings-panel">
-      <header>
-        <h2>Settings</h2>
-        <button onClick={onClose}>Close</button>
+    <div className={surfaceClass}>
+      <header className="app-header">
+        <h1>🪞 MCI Edge</h1>
+        <SurfaceSwitcher
+          surface={surface}
+          setSurface={setSurface}
+          disabled={isConnected}
+        />
       </header>
 
-      <label className="toggle-row">
-        <span>Visual nudges</span>
-        <input type="checkbox" checked={settings.visualEnabled} onChange={(event) => onChange("visualEnabled", event.target.checked)} />
-      </label>
-      <label className="toggle-row">
-        <span>Audio nudges</span>
-        <input type="checkbox" checked={settings.audioEnabled} onChange={(event) => onChange("audioEnabled", event.target.checked)} />
-      </label>
-      <label className="toggle-row">
-        <span>Camera</span>
-        <input type="checkbox" checked={settings.cameraActive} onChange={(event) => onChange("cameraActive", event.target.checked)} />
-      </label>
-      <label className="toggle-row">
-        <span>Microphone</span>
-        <input type="checkbox" checked={settings.micActive} onChange={(event) => onChange("micActive", event.target.checked)} />
-      </label>
-      <label className="field-label">
-        Auto-dismiss seconds
-        <input
-          type="number"
-          min={3}
-          max={30}
-          value={settings.nudgeDurationSeconds}
-          onChange={(event) => onChange("nudgeDurationSeconds", Number(event.target.value))}
+      <ConnectionBar
+        url={wsUrl}
+        setUrl={setWsUrl}
+        state={state}
+        onConnect={handleConnect}
+        onDisconnect={handleDisconnect}
+      />
+
+      <main className="stage">
+        <video
+          ref={videoRef}
+          className={`camera ${isConnected ? "live" : "off"}`}
+          autoPlay
+          muted
+          playsInline
         />
-      </label>
-    </section>
+
+        <div className="hud">
+          <PrivacyDot active={cameraActive} />
+          <button
+            className="audio-toggle"
+            onClick={() => setAudioEnabled((v) => !v)}
+            type="button"
+          >
+            {audioEnabled ? "🔊 audio on" : "🔇 audio off"}
+          </button>
+        </div>
+
+        <NudgeOverlay nudge={state.lastNudge} onDismiss={handleNudgeDismiss} />
+      </main>
+
+      {!isConnected && (
+        <footer className="hint">
+          Enter your home-server WebSocket URL above and press Connect.
+          Camera turns on automatically.
+        </footer>
+      )}
+    </div>
   );
 }
 
-function getInitialSurface(): SurfaceMode {
-  const requested = new URLSearchParams(window.location.search).get("surface");
-  if (requested === "quest" || requested === "mobile" || requested === "desktop") {
-    return requested;
-  }
-
-  if (/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
-    return "mobile";
-  }
-
+function detectSurface(): SurfaceMode {
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes("oculus") || ua.includes("quest")) return "quest";
+  if (ua.includes("mobile") || ua.includes("iphone") || ua.includes("android")) return "mobile";
   return "desktop";
 }
 
