@@ -376,12 +376,18 @@ def test_ws_live_mode_audio_chunk_dispatches_mark_done(
                 "sample_rate": 16000,
                 "duration_ms": 3000,
             }))
+            voice_data = ws.receive_text()
+            voice_payload = json.loads(voice_data)
+
             # Round-trip a ping so we know the audio message has been
             # fully processed by the server's WS loop before we inspect state.
             ws.send_text(json.dumps({"type": "ping"}))
             data = ws.receive_text()
             payload = json.loads(data)
 
+        assert voice_payload["type"] == "voice_command"
+        assert voice_payload["transcript"] == "I already took my pill"
+        assert voice_payload["tool"] == "markDone"
         assert payload["type"] == "ack" and payload["message"] == "pong"
         # The LLM was asked about the transcript
         assert llm.voice_calls == ["I already took my pill"]

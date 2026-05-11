@@ -68,3 +68,12 @@ class AckMessage(BaseModel):
     type: Literal["ack"] = "ack"
     message: str
     server_time: datetime
+
+
+class VoiceCommandMessage(BaseModel):
+    """Result of a spoken command so the edge can update UI immediately."""
+    type: Literal["voice_command"] = "voice_command"
+    transcript: str
+    tool: Optional[str] = None
+    raw: str = ""
+    provider: str

@@ -1,11 +1,18 @@
 // Custom hook: connect/disconnect, send messages, expose latest nudge.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ClientMessage, NudgeMessage, ServerMessage, SurfaceMode } from "./types";
+import type {
+  ClientMessage,
+  NudgeMessage,
+  ServerMessage,
+  SurfaceMode,
+  VoiceCommandMessage,
+} from "./types";
 
 export interface ConnectionState {
   status: "disconnected" | "connecting" | "connected" | "error";
   lastNudge: NudgeMessage | null;
+  lastVoiceCommand: VoiceCommandMessage | null;
   framesSent: number;
 }
 
@@ -21,6 +28,7 @@ export function useWebSocket(): WebSocketHandle {
   const [state, setState] = useState<ConnectionState>({
     status: "disconnected",
     lastNudge: null,
+    lastVoiceCommand: null,
     framesSent: 0,
   });
 
@@ -71,6 +79,18 @@ export function useWebSocket(): WebSocketHandle {
         const payload = JSON.parse(ev.data) as ServerMessage;
         if (payload.type === "nudge") {
           setState((s) => ({ ...s, lastNudge: payload }));
+        } else if (payload.type === "voice_command") {
+          const clearsCurrentNudge = [
+            "markDone",
+            "dismissTemporarily",
+            "flagWrong",
+            "closeForever",
+          ].includes(payload.tool ?? "");
+          setState((s) => ({
+            ...s,
+            lastVoiceCommand: payload,
+            lastNudge: clearsCurrentNudge ? null : s.lastNudge,
+          }));
         }
       } catch {
         // ignore malformed messages

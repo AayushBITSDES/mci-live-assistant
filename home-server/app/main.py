@@ -39,6 +39,7 @@ from app.models import (
     NudgeMessage,
     NudgePriority,
     StatusMessage,
+    VoiceCommandMessage,
 )
 from app.pipeline import Heavy, Session
 from context.event_log import append_event
@@ -155,7 +156,15 @@ def create_app() -> FastAPI:
                     # Heavy on dev box) we just parse-and-discard so the
                     # protocol stays clean.
                     if session is not None:
-                        await session.handle_audio(parsed)
+                        result = await session.handle_audio(parsed)
+                        if result is not None:
+                            transcript, command = result
+                            await ws.send_text(VoiceCommandMessage(
+                                transcript=transcript,
+                                tool=command.tool.name if command.tool else None,
+                                raw=command.raw_text,
+                                provider=command.provider,
+                            ).model_dump_json())
 
                 elif msg_type == "status":
                     logger.info(

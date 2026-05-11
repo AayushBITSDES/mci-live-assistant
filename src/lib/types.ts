@@ -20,7 +20,15 @@ export interface AckMessage {
   server_time: string;
 }
 
-export type ServerMessage = NudgeMessage | AckMessage;
+export interface VoiceCommandMessage {
+  type: "voice_command";
+  transcript: string;
+  tool?: string | null;
+  raw: string;
+  provider: string;
+}
+
+export type ServerMessage = NudgeMessage | AckMessage | VoiceCommandMessage;
 
 export interface FrameMessage {
   type: "frame";

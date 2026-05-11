@@ -131,7 +131,7 @@ class Heavy:
         try:
             from audio.tts import PiperSynthesizer  # heavy import
             tts = PiperSynthesizer(voice_name=settings.piper_voice)
-        except (ImportError, OSError, RuntimeError) as exc:
+        except (ImportError, OSError, RuntimeError, TypeError) as exc:
             logger.info("Heavy: TTS unavailable (%s) -> nudges will be text-only", exc)
 
         # Whisper is optional; without it the audio path is a no-op log.
@@ -363,7 +363,7 @@ class Session:
 
     # --- Audio path --------------------------------------------------------
 
-    async def handle_audio(self, audio: AudioChunkMessage) -> None:
+    async def handle_audio(self, audio: AudioChunkMessage) -> Optional[tuple[str, CommandResult]]:
         """Transcribe an audio chunk and dispatch any resulting tool call.
 
         Independent of the frame path: an audio chunk is its own
@@ -372,31 +372,31 @@ class Session:
         and the next chunk is processed normally.
         """
         if self._closed:
-            return
+            return None
         whisper = self._heavy.whisper
         if whisper is None:
             # Voice commands are not available in this build (no Whisper).
             # Acknowledge silently so the protocol stays clean.
-            return
+            return None
 
         try:
             audio_bytes = base64.b64decode(audio.audio_b64)
         except Exception as exc:
             logger.warning("Session: bad audio_b64 (%s) - skipping chunk", exc)
-            return
+            return None
         if not audio_bytes:
-            return
+            return None
 
         try:
             transcript = await asyncio.to_thread(whisper.transcribe, audio_bytes)
         except Exception:
             logger.exception("Session: Whisper failed - skipping audio chunk")
-            return
+            return None
 
         transcript = (transcript or "").strip()
         if not transcript:
             # VAD inside Whisper filtered the chunk down to silence.
-            return
+            return None
 
         logger.info("Session: audio transcript=%r", transcript)
         try:
@@ -406,7 +406,7 @@ class Session:
             )
         except Exception:
             logger.exception("Session: handle_voice_command failed - dropping audio")
-            return
+            return None
 
         # Always log the interpretation, even when no tool was returned —
         # it's useful in the dashboard for debugging mis-recognitions.
@@ -424,6 +424,7 @@ class Session:
 
         if command.tool is not None:
             await self._dispatch_tool(command.tool)
+        return transcript, command
 
     # --- Tool dispatch -----------------------------------------------------
 
