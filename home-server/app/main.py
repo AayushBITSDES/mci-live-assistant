@@ -1,10 +1,23 @@
 """FastAPI entrypoint: WebSocket stream + health check.
 
 The WS handler receives FrameMessage / AudioChunkMessage / StatusMessage
-JSON from edge clients, appends events to the JSONL audit trail, and
-emits NudgeMessage replies. When LLM API keys are present, every Nth
-frame goes to the configured provider; otherwise a debug nudge fires
-periodically so the wire format can be smoke-tested without credits.
+JSON from edge clients, runs the live pipeline (vision -> gate -> LLM ->
+TTS), and emits NudgeMessage replies.
+
+## Two operating modes
+
+1. **Live pipeline** -- `app.state.heavy` is non-None. Each WS connection
+   gets its own `Session` (gate + candidate queue + worker). Frames flow
+   through the real ML stack and produce real LLM-generated nudges.
+
+2. **Debug stub** -- `app.state.heavy` is None (graceful degradation when
+   ML deps are missing on the dev box). Every Nth frame emits a hardcoded
+   `Pipeline OK` nudge so the wire format can be smoke-tested without
+   needing torch / ultralytics / API keys.
+
+The two modes share the routing layer; only the body of the "frame"
+branch differs. Audio is parsed-and-acked in both modes pending the
+React client growing a MediaRecorder send path.
 """
 from __future__ import annotations
 
@@ -27,6 +40,7 @@ from app.models import (
     NudgePriority,
     StatusMessage,
 )
+from app.pipeline import Heavy, Session
 from context.event_log import append_event
 from context.manager import ContextManager
 from context.replay import replay_recent
@@ -35,14 +49,15 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 
-# Frame interval at which a debug nudge is emitted when no LLM is
-# configured. At 5 FPS this is ~6 seconds, enough time to read it.
+# Frame interval at which a debug nudge is emitted when the live pipeline
+# is unavailable. At 5 FPS this is ~6 seconds, enough time to read it.
 DEBUG_NUDGE_EVERY_N_FRAMES = 30
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
+
     cm = ContextManager()
     if settings.fresh_start:
         logger.info("Fresh start: skipping JSONL replay (clean demo state)")
@@ -50,10 +65,16 @@ async def lifespan(app: FastAPI):
         replayed = replay_recent(cm, lookback_hours=settings.replay_lookback_hours)
         logger.info("Replayed %d recent events into ContextManager", replayed)
     app.state.context_manager = cm
+
+    # Try to build the live pipeline. Missing ML deps / weights / API
+    # keys fall back to the debug stub without crashing the server.
+    app.state.heavy = Heavy.from_settings(settings)
+
     logger.info(
-        "Home server ready | provider=%s | fps=%d | api_key=%s",
+        "Home server ready | provider=%s | fps=%d | mode=%s | api_key=%s",
         settings.active_llm_provider,
         settings.target_fps,
+        "live" if app.state.heavy is not None else "debug-stub",
         "set" if (settings.xai_api_key or settings.google_api_key) else "missing",
     )
     yield
@@ -69,7 +90,12 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict:
-        return {"status": "ok", "provider": settings.active_llm_provider}
+        live = getattr(app.state, "heavy", None) is not None
+        return {
+            "status": "ok",
+            "provider": settings.active_llm_provider,
+            "mode": "live" if live else "debug-stub",
+        }
 
     @app.websocket("/ws/stream")
     async def stream(ws: WebSocket) -> None:
@@ -80,6 +106,30 @@ def create_app() -> FastAPI:
         logger.info("WS connected | device=%s | surface=%s", device, surface)
 
         cm: ContextManager = ws.app.state.context_manager
+        heavy: Heavy | None = getattr(ws.app.state, "heavy", None)
+
+        # Build a Session iff the live pipeline is available. The on_nudge
+        # callback is closed over `ws` so the pipeline can stay
+        # transport-agnostic.
+        session: Session | None = None
+        if heavy is not None:
+            async def on_nudge(nudge: NudgeMessage) -> None:
+                try:
+                    await ws.send_text(nudge.model_dump_json())
+                except (WebSocketDisconnect, RuntimeError):
+                    # Connection closed mid-flight; drop the nudge silently.
+                    # RuntimeError covers "Cannot call 'send' once a close
+                    # message has been sent." from starlette.
+                    pass
+
+            session = Session(
+                heavy=heavy,
+                context=cm,
+                on_nudge=on_nudge,
+                auto_dismiss_seconds=settings.nudge_auto_dismiss_seconds,
+            )
+            await session.start()
+
         frame_counter = 0
 
         try:
@@ -89,13 +139,23 @@ def create_app() -> FastAPI:
 
                 if msg_type == "frame":
                     frame_counter += 1
-                    nudge = await _maybe_emit_debug_nudge(frame_counter, cm)
-                    if nudge is not None:
-                        await ws.send_text(nudge.model_dump_json())
+                    if session is not None:
+                        # Live pipeline. Vision + gate run synchronously here;
+                        # the LLM + TTS happen on the session's worker task
+                        # and arrive via the on_nudge callback later.
+                        await session.handle_frame(parsed)
+                    else:
+                        nudge = await _maybe_emit_debug_nudge(frame_counter)
+                        if nudge is not None:
+                            await ws.send_text(nudge.model_dump_json())
 
                 elif msg_type == "audio":
-                    # Phase 5 wires real ASR here. For now: ack only.
-                    pass
+                    # In live mode we run the chunk through Whisper +
+                    # voice-command tool dispatch. In debug-stub mode (no
+                    # Heavy on dev box) we just parse-and-discard so the
+                    # protocol stays clean.
+                    if session is not None:
+                        await session.handle_audio(parsed)
 
                 elif msg_type == "status":
                     logger.info(
@@ -109,7 +169,6 @@ def create_app() -> FastAPI:
                     await ws.send_text(ack.model_dump_json())
 
                 else:
-                    # Unknown shape -> echo for debugging
                     ack = AckMessage(
                         message=f"unknown:{(raw or '')[:60]}",
                         server_time=datetime.now(timezone.utc),
@@ -118,6 +177,9 @@ def create_app() -> FastAPI:
 
         except WebSocketDisconnect:
             logger.info("WS disconnected | device=%s", device)
+        finally:
+            if session is not None:
+                await session.close()
 
     return app
 
@@ -154,12 +216,10 @@ def _route_message(raw: str):
     return "unknown", payload
 
 
-async def _maybe_emit_debug_nudge(frame_counter: int, cm: ContextManager):
-    """Periodic hardcoded nudge so edge devs can smoke-test without API keys.
+async def _maybe_emit_debug_nudge(frame_counter: int):
+    """Periodic hardcoded nudge for wire-format smoke tests.
 
-    Real LLM dispatch lands once `app.state.context_manager` is wired into
-    the gate + processor + LLM client (next phase). For now this proves
-    the wire format end-to-end.
+    Only used when graceful degradation kicked in (live Heavy unavailable).
     """
     if frame_counter % DEBUG_NUDGE_EVERY_N_FRAMES != 0:
         return None
@@ -171,7 +231,6 @@ async def _maybe_emit_debug_nudge(frame_counter: int, cm: ContextManager):
         auto_dismiss_seconds=settings.nudge_auto_dismiss_seconds,
     )
 
-    # Audit-log the debug emission so it shows up in the dashboard
     await asyncio.to_thread(
         append_event,
         {

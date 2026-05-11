@@ -39,4 +39,17 @@ export interface StatusMessage {
   camera_active: boolean;
 }
 
-export type ClientMessage = FrameMessage | StatusMessage | { type: "ping" };
+export interface AudioChunkMessage {
+  type: "audio";
+  device_id: string;
+  timestamp: string;
+  audio_b64: string;        // base64-encoded webm/opus from MediaRecorder
+  sample_rate: number;      // browser default is 48000 for webm/opus
+  duration_ms: number;
+}
+
+export type ClientMessage =
+  | FrameMessage
+  | StatusMessage
+  | AudioChunkMessage
+  | { type: "ping" };
