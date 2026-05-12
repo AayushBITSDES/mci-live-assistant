@@ -30,6 +30,8 @@ class ObservationAdapter:
 
         if "stove" in labels:
             messages.extend(demo.record_stove_interaction(now=now))
+        else:
+            demo.record_stove_absent()
         messages.extend(demo.check_stove_timers(now=now))
 
         for name in detection.recognized_names:

@@ -97,7 +97,15 @@ async def lifespan(app: FastAPI):
         "live" if app.state.heavy is not None else "debug-stub",
         "set" if (settings.xai_api_key or settings.google_api_key) else "missing",
     )
-    yield
+    try:
+        yield
+    finally:
+        heavy = getattr(app.state, "heavy", None)
+        if heavy is not None:
+            for component in (getattr(heavy, "tts", None), getattr(heavy, "whisper", None)):
+                close = getattr(component, "close", None)
+                if callable(close):
+                    await asyncio.to_thread(close)
 
 
 def create_app() -> FastAPI:

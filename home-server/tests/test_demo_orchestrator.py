@@ -67,6 +67,41 @@ def test_stove_timers_remind_then_escalate_to_caregiver() -> None:
     assert demo.state.stove_state == "escalated"
 
 
+def test_operator_stove_start_uses_full_timer_sequence() -> None:
+    demo = DemoOrchestrator(
+        stove_first_reminder_seconds=30,
+        stove_escalation_seconds=60,
+    )
+    demo.set_visitor_name("Shanta")
+    start = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    demo.trigger_stove_on(source="operator")
+    demo.state.stove_started_at = start
+
+    assert demo.state.stove_state == "active"
+    assert demo.state.stove_first_reminded_at is None
+    assert demo.check_stove_timers(now=start + timedelta(seconds=29)) == []
+    first = demo.check_stove_timers(now=start + timedelta(seconds=30))
+    second = demo.check_stove_timers(now=start + timedelta(seconds=60))
+
+    assert any(m["type"] == "nudge" for m in first)
+    assert any(m["type"] == "caregiver_alert" for m in second)
+
+
+def test_returning_to_stove_after_leaving_resolves_risk() -> None:
+    demo = DemoOrchestrator()
+    start = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    assert demo.record_stove_interaction(now=start) == []
+    assert demo.record_stove_interaction(now=start + timedelta(seconds=1)) == []
+    demo.record_stove_absent()
+    resolved = demo.record_stove_interaction(now=start + timedelta(seconds=2))
+
+    assert resolved[0]["type"] == "assistant_reply"
+    assert "checking the stove" in resolved[0]["sentence"]
+    assert demo.state.stove_state == "off"
+
+
 def test_caregiver_acknowledgement_marks_alert_seen() -> None:
     demo = DemoOrchestrator()
     demo.trigger_stove_on(source="operator")

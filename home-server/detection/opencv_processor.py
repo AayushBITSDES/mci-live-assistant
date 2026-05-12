@@ -30,10 +30,18 @@ class OpenCVFrameProcessor:
         objects, faces = await asyncio.gather(objects_task, faces_task)
 
         full = FullDetectionResult(objects=objects, faces=faces)
+        reduced_objects = _reduced_object_labels(full.object_labels)
         reduced = RuleInput(
             timestamp=ts,
-            objects=full.object_labels,
-            person_present=bool(full.faces),
+            objects=reduced_objects,
+            person_present=bool(full.faces or full.objects),
             recognized_names=full.recognized_names,
         )
         return full, reduced
+
+
+def _reduced_object_labels(labels: list[str]) -> list[str]:
+    out = list(labels)
+    if "medicine_bottle" in labels and "bottle" not in out:
+        out.append("bottle")
+    return out

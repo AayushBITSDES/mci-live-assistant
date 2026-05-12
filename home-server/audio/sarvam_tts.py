@@ -29,35 +29,39 @@ class SarvamSynthesizer:
         self._model = model
         self._speaker = speaker
         self._language_code = language_code
-        self._client = client
-        self._timeout = timeout
+        self._owns_client = client is None
+        self._client = client or httpx.Client(timeout=timeout)
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    def __enter__(self) -> "SarvamSynthesizer":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
     def synthesize(self, text: str) -> bytes:
         text = (text or "").strip()
         if not text:
             return b""
 
-        close_client = self._client is None
-        client = self._client or httpx.Client(timeout=self._timeout)
-        try:
-            response = client.post(
-                SARVAM_TTS_URL,
-                headers={
-                    "api-subscription-key": self._api_key,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "target_language_code": self._language_code,
-                    "model": self._model,
-                    "speaker": self._speaker,
-                },
-            )
-            response.raise_for_status()
-            payload: dict[str, Any] = response.json()
-        finally:
-            if close_client:
-                client.close()
+        response = self._client.post(
+            SARVAM_TTS_URL,
+            headers={
+                "api-subscription-key": self._api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "text": text,
+                "target_language_code": self._language_code,
+                "model": self._model,
+                "speaker": self._speaker,
+            },
+        )
+        response.raise_for_status()
+        payload: dict[str, Any] = response.json()
 
         audios = payload.get("audios")
         if not isinstance(audios, list) or not audios:

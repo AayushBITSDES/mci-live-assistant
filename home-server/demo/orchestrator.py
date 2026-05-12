@@ -24,6 +24,7 @@ class DemoState:
     stove_ignored_count: int = 0
     stove_started_at: datetime | None = None
     stove_first_reminded_at: datetime | None = None
+    stove_return_armed: bool = False
     caregiver_alerts: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -87,24 +88,19 @@ class DemoOrchestrator:
                 }
             ]
         if tool == "markDone" and _looks_like_stove_resolution(task):
-            self.state.stove_state = "off"
-            self.state.stove_started_at = None
-            self.state.stove_first_reminded_at = None
-            return [
-                {
-                    "type": "assistant_reply",
-                    "sentence": "Got it, the stove risk is marked resolved.",
-                    "ts": time.time(),
-                }
-            ]
+            messages = self.resolve_stove(source="voice")
+            if messages:
+                messages[0]["sentence"] = "Got it, the stove risk is marked resolved."
+            return messages
         return []
 
     def trigger_stove_on(self, *, source: str) -> list[dict[str, Any]]:
         _ = source
-        self.state.stove_state = "reminded"
+        self.state.stove_state = "active"
         self.state.stove_ignored_count = 0
         self.state.stove_started_at = _aware(None)
-        self.state.stove_first_reminded_at = self.state.stove_started_at
+        self.state.stove_first_reminded_at = None
+        self.state.stove_return_armed = False
         name = self.state.visitor_name or "there"
         sentence = f"{name}, the stove is on. Please check the stove."
         return [_nudge(sentence, priority="safety", scenario="stove_on")]
@@ -116,7 +112,31 @@ class DemoOrchestrator:
             self.state.stove_ignored_count = 0
             self.state.stove_started_at = now
             self.state.stove_first_reminded_at = None
+            self.state.stove_return_armed = False
+        elif self.state.stove_state in {"active", "reminded"} and self.state.stove_return_armed:
+            return self.resolve_stove(source="recognizer")
         return []
+
+    def record_stove_absent(self) -> None:
+        if self.state.stove_state in {"active", "reminded"}:
+            self.state.stove_return_armed = True
+
+    def resolve_stove(self, *, source: str) -> list[dict[str, Any]]:
+        _ = source
+        if self.state.stove_state not in {"active", "reminded", "escalated"}:
+            return []
+        self.state.stove_state = "off"
+        self.state.stove_started_at = None
+        self.state.stove_first_reminded_at = None
+        self.state.stove_return_armed = False
+        self.state.stove_ignored_count = 0
+        return [
+            {
+                "type": "assistant_reply",
+                "sentence": "Thanks, I can see you are checking the stove.",
+                "ts": time.time(),
+            }
+        ]
 
     def check_stove_timers(self, *, now: datetime | None = None) -> list[dict[str, Any]]:
         now = _aware(now)

@@ -142,8 +142,7 @@ class OpenCVFaceRecognizer:
         cascade = self._cv2.CascadeClassifier(cascade_path)
         boxes = [] if cascade.empty() else cascade.detectMultiScale(gray_image, 1.1, 5)
         if len(boxes) == 0:
-            height, width = gray_image.shape[:2]
-            return [(gray_image, (0.0, 0.0, float(width), float(height)))]
+            return []
         regions = []
         for x, y, w, h in boxes:
             regions.append((

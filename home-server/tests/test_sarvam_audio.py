@@ -2,11 +2,23 @@ from __future__ import annotations
 
 import base64
 import json
+from typing import Any
 
 import httpx
 
 from audio.sarvam_asr import SARVAM_STT_URL, SarvamTranscriber
 from audio.sarvam_tts import SARVAM_TTS_URL, SarvamSynthesizer
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
 
 
 def test_sarvam_asr_posts_multipart_and_reads_transcript() -> None:
@@ -41,6 +53,36 @@ def test_sarvam_asr_empty_audio_short_circuits() -> None:
     assert asr.transcribe(b"") == ""
 
 
+def test_sarvam_asr_reuses_owned_http_client(monkeypatch) -> None:
+    instances: list[Any] = []
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+            self.posts = 0
+            self.closed = False
+            instances.append(self)
+
+        def post(self, *args, **kwargs):
+            self.posts += 1
+            return _FakeResponse({"transcript": f"transcript-{self.posts}"})
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr("audio.sarvam_asr.httpx.Client", FakeClient)
+    asr = SarvamTranscriber(api_key="x")
+
+    assert asr.transcribe(b"one") == "transcript-1"
+    assert asr.transcribe(b"two") == "transcript-2"
+    assert len(instances) == 1
+    assert instances[0].posts == 2
+    assert instances[0].closed is False
+
+    asr.close()
+    assert instances[0].closed is True
+
+
 def test_sarvam_tts_posts_json_and_decodes_first_audio() -> None:
     wav = b"RIFFfake-wave"
     seen: dict = {}
@@ -72,3 +114,34 @@ def test_sarvam_tts_posts_json_and_decodes_first_audio() -> None:
 def test_sarvam_tts_empty_text_short_circuits() -> None:
     tts = SarvamSynthesizer(api_key="x")
     assert tts.synthesize("  ") == b""
+
+
+def test_sarvam_tts_reuses_owned_http_client(monkeypatch) -> None:
+    wav = base64.b64encode(b"RIFF").decode("ascii")
+    instances: list[Any] = []
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+            self.posts = 0
+            self.closed = False
+            instances.append(self)
+
+        def post(self, *args, **kwargs):
+            self.posts += 1
+            return _FakeResponse({"audios": [wav]})
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr("audio.sarvam_tts.httpx.Client", FakeClient)
+    tts = SarvamSynthesizer(api_key="x")
+
+    assert tts.synthesize("one") == b"RIFF"
+    assert tts.synthesize("two") == b"RIFF"
+    assert len(instances) == 1
+    assert instances[0].posts == 2
+    assert instances[0].closed is False
+
+    tts.close()
+    assert instances[0].closed is True

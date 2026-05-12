@@ -45,6 +45,19 @@ def test_stove_observation_maps_to_timer_escalation() -> None:
     assert demo.state.stove_state == "escalated"
 
 
+def test_stove_observation_resolves_when_user_returns() -> None:
+    demo = DemoOrchestrator(stove_first_reminder_seconds=30, stove_escalation_seconds=60)
+    adapter = ObservationAdapter()
+    start = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    assert adapter.apply(demo, _detection(start, objects=["stove"])) == []
+    assert adapter.apply(demo, _detection(start + timedelta(seconds=5))) == []
+    messages = adapter.apply(demo, _detection(start + timedelta(seconds=6), objects=["stove"]))
+
+    assert messages[0]["type"] == "assistant_reply"
+    assert demo.state.stove_state == "off"
+
+
 def test_face_observation_maps_to_one_cue() -> None:
     demo = DemoOrchestrator()
     adapter = ObservationAdapter()

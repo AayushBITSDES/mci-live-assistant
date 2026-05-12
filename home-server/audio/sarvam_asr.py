@@ -33,33 +33,37 @@ class SarvamTranscriber:
         self._model = model
         self._mode = mode
         self._language_code = language_code
-        self._client = client
-        self._timeout = timeout
+        self._owns_client = client is None
+        self._client = client or httpx.Client(timeout=timeout)
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+    def __enter__(self) -> "SarvamTranscriber":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
     def transcribe(self, audio_bytes: bytes) -> str:
         if not audio_bytes:
             return ""
 
-        close_client = self._client is None
-        client = self._client or httpx.Client(timeout=self._timeout)
-        try:
-            data: dict[str, Any] = {
-                "model": self._model,
-                "mode": self._mode,
-            }
-            if self._language_code:
-                data["language_code"] = self._language_code
-            response = client.post(
-                SARVAM_STT_URL,
-                headers={"api-subscription-key": self._api_key},
-                data=data,
-                files={"file": ("audio.webm", audio_bytes, "audio/webm")},
-            )
-            response.raise_for_status()
-            payload = response.json()
-        finally:
-            if close_client:
-                client.close()
+        data: dict[str, Any] = {
+            "model": self._model,
+            "mode": self._mode,
+        }
+        if self._language_code:
+            data["language_code"] = self._language_code
+        response = self._client.post(
+            SARVAM_STT_URL,
+            headers={"api-subscription-key": self._api_key},
+            data=data,
+            files={"file": ("audio.webm", audio_bytes, "audio/webm")},
+        )
+        response.raise_for_status()
+        payload = response.json()
 
         transcript = str(payload.get("transcript") or "").strip()
         if not transcript:
