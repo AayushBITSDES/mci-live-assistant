@@ -144,6 +144,8 @@ function App() {
       setMicActive(enabled);
     } else if (control.target === "camera") {
       setCameraEnabled(enabled);
+    } else if (control.target === "audio") {
+      setAudioEnabled(enabled);
     }
   }, [state.lastControl]);
 
@@ -177,7 +179,7 @@ function App() {
           duration_ms: Math.round(durationMs),
         });
       },
-      { chunkMs: 3000 },
+      { chunkMs: 1500, minMs: 350 },
     )
       .then((handle) => {
         if (cancelled) {
@@ -304,15 +306,19 @@ function App() {
 
         <div className="hud">
           <PrivacyDot active={cameraActive} />
+          <span className={`media-pill ${cameraEnabled ? "on" : "off"}`}>
+            camera {cameraEnabled ? "on" : "off"}
+          </span>
           <button
-            className="audio-toggle"
+            className={`audio-toggle ${audioEnabled ? "on" : "off"}`}
             onClick={() => setAudioEnabled((v) => !v)}
             type="button"
+            aria-pressed={audioEnabled}
           >
             {audioEnabled ? "🔊 audio on" : "🔇 audio off"}
           </button>
           <button
-            className="mic-toggle"
+            className={`mic-toggle ${micActive ? "on" : "off"}`}
             onClick={() => {
               setMicError(null);
               setMicActive((v) => !v);
@@ -324,6 +330,7 @@ function App() {
                 : "Connect first"
             }
             type="button"
+            aria-pressed={micActive}
           >
             {micActive ? "🎙️ mic on" : "🎤 mic off"}
           </button>

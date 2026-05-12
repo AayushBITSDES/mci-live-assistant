@@ -190,17 +190,47 @@ button, input, select { font: inherit; }
   gap: 8px;
 }
 
-.audio-toggle {
+.audio-toggle,
+.mic-toggle,
+.media-pill {
   padding: 6px 12px;
   background: rgba(0, 0, 0, 0.5);
   color: inherit;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 999px;
-  cursor: pointer;
   font-size: 12px;
 }
 
-.audio-toggle:hover { background: rgba(0, 0, 0, 0.7); }
+.audio-toggle,
+.mic-toggle {
+  cursor: pointer;
+}
+
+.audio-toggle:hover,
+.mic-toggle:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.audio-toggle.off,
+.mic-toggle.off,
+.media-pill.off {
+  background: rgba(95, 26, 26, 0.82);
+  border-color: rgba(255, 130, 130, 0.45);
+  color: #ffd6d6;
+}
+
+.audio-toggle.on,
+.mic-toggle.on,
+.media-pill.on {
+  background: rgba(20, 74, 42, 0.7);
+  border-color: rgba(92, 230, 145, 0.35);
+  color: #d9ffe7;
+}
+
+.mic-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
 /* --- Privacy dot ------------------------------------------------------ */
 

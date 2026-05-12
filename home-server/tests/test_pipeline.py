@@ -659,6 +659,82 @@ async def test_handle_audio_dispatches_mark_done_for_medication(_isolated_storag
 
 
 @pytest.mark.asyncio
+async def test_handle_audio_mic_off_uses_local_tool_without_llm(_isolated_storage) -> None:
+    """Privacy controls should be deterministic, not dependent on LLM tool choice."""
+    whisper = _FakeWhisper(transcript="Mic off.")
+    llm = _FakeLLM()
+    cm = ContextManager()
+    session = Session(
+        heavy=_heavy(_FakeProcessor([]), llm, whisper=whisper),
+        context=cm,
+        on_nudge=lambda n: _append_async([], n),
+    )
+    await session.start()
+    try:
+        result = await session.handle_audio(_audio_msg())
+    finally:
+        await session.close()
+
+    assert result is not None
+    transcript, command = result
+    assert transcript == "Mic off."
+    assert command.tool is not None
+    assert command.tool.name == "toggleMic"
+    assert command.tool.arguments == {"state": "off"}
+    assert command.provider == "local"
+    assert llm.voice_calls == []
+
+
+@pytest.mark.asyncio
+async def test_handle_audio_audio_off_uses_local_tool_without_llm(_isolated_storage) -> None:
+    whisper = _FakeWhisper(transcript="audio off")
+    llm = _FakeLLM()
+    cm = ContextManager()
+    session = Session(
+        heavy=_heavy(_FakeProcessor([]), llm, whisper=whisper),
+        context=cm,
+        on_nudge=lambda n: _append_async([], n),
+    )
+    await session.start()
+    try:
+        result = await session.handle_audio(_audio_msg())
+    finally:
+        await session.close()
+
+    assert result is not None
+    _transcript, command = result
+    assert command.tool is not None
+    assert command.tool.name == "toggleAudio"
+    assert command.tool.arguments == {"state": "off"}
+    assert llm.voice_calls == []
+
+
+@pytest.mark.asyncio
+async def test_handle_audio_presence_check_uses_local_reply_without_llm(_isolated_storage) -> None:
+    whisper = _FakeWhisper(transcript="Are you there?")
+    llm = _FakeLLM()
+    cm = ContextManager()
+    session = Session(
+        heavy=_heavy(_FakeProcessor([]), llm, whisper=whisper),
+        context=cm,
+        on_nudge=lambda n: _append_async([], n),
+    )
+    await session.start()
+    try:
+        result = await session.handle_audio(_audio_msg())
+    finally:
+        await session.close()
+
+    assert result is not None
+    _transcript, command = result
+    assert command.tool is not None
+    assert command.tool.name == "assistantReply"
+    assert "listening" in command.tool.arguments["sentence"]
+    assert command.provider == "local"
+    assert llm.voice_calls == []
+
+
+@pytest.mark.asyncio
 async def test_handle_audio_mark_done_closes_open_risk_window(_isolated_storage) -> None:
     """markDone should close the most-recently-opened risk window."""
     cm = ContextManager()

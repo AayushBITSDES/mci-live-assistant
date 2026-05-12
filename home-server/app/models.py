@@ -97,6 +97,6 @@ class AssistantReplyMessage(BaseModel):
 class EdgeControlMessage(BaseModel):
     """Backend request for the edge to toggle browser-owned media streams."""
     type: Literal["edge_control"] = "edge_control"
-    target: Literal["mic", "camera"]
+    target: Literal["mic", "camera", "audio"]
     action: Literal["on", "off"]
     reason: str = "voice_command"

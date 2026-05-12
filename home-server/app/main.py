@@ -274,7 +274,7 @@ def create_app() -> FastAPI:
                             control = _edge_control_from_tool(command.tool)
                             if control is not None:
                                 await ws.send_text(control.model_dump_json())
-                            reply = _assistant_reply_from_tool(command.tool)
+                            reply = _assistant_reply_from_command(command)
                             if reply is not None:
                                 await ws.send_text(reply.model_dump_json())
 
@@ -375,13 +375,19 @@ def _edge_control_from_tool(tool) -> EdgeControlMessage | None:
         return EdgeControlMessage(target="mic", action=state)
     if tool.name == "toggleCamera":
         return EdgeControlMessage(target="camera", action=state)
+    if tool.name == "toggleAudio":
+        return EdgeControlMessage(target="audio", action=state)
     return None
 
 
-def _assistant_reply_from_tool(tool) -> AssistantReplyMessage | None:
-    if tool is None or tool.name != "assistantReply":
+def _assistant_reply_from_command(command) -> AssistantReplyMessage | None:
+    tool = command.tool
+    if tool is not None and tool.name == "assistantReply":
+        sentence = str((tool.arguments or {}).get("sentence", "")).strip()
+    elif tool is None:
+        sentence = str(command.raw_text or "").strip()
+    else:
         return None
-    sentence = str((tool.arguments or {}).get("sentence", "")).strip()
     if not sentence:
         return None
     return AssistantReplyMessage(sentence=sentence)

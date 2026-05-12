@@ -29,7 +29,7 @@ class WhisperTranscriber:
         *,
         language: str = "en",
         device: str = "auto",
-        compute_type: str = "auto",
+        compute_type: str = "int8",
         model: Optional[Any] = None,
     ) -> None:
         self._language = language

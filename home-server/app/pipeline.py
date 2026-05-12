@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,7 +42,7 @@ from context.builder import build_summary
 from context.event_log import append_event
 from context.manager import ContextManager
 from detection.processor import FrameProcessor
-from llm.base import LLMClient, ToolCall
+from llm.base import CommandResult, LLMClient, ToolCall
 from llm.tools import SNOOZE_DURATION_SECONDS
 from triggers.gate import TriggerGate
 from triggers.rules import CandidateKind, TriggerCandidate
@@ -387,11 +388,13 @@ class Session:
         if not audio_bytes:
             return None
 
+        asr_started = time.perf_counter()
         try:
             transcript = await asyncio.to_thread(whisper.transcribe, audio_bytes)
         except Exception:
             logger.exception("Session: Whisper failed - skipping audio chunk")
             return None
+        logger.info("Session: ASR completed in %.2fs", time.perf_counter() - asr_started)
 
         transcript = (transcript or "").strip()
         if not transcript:
@@ -399,14 +402,18 @@ class Session:
             return None
 
         logger.info("Session: audio transcript=%r", transcript)
-        try:
-            command = await self._heavy.llm.handle_voice_command(
-                transcript=transcript,
-                context_summary=build_summary(self._context),
-            )
-        except Exception:
-            logger.exception("Session: handle_voice_command failed - dropping audio")
-            return None
+        command = _local_voice_command(transcript)
+        if command is None:
+            llm_started = time.perf_counter()
+            try:
+                command = await self._heavy.llm.handle_voice_command(
+                    transcript=transcript,
+                    context_summary=build_summary(self._context),
+                )
+            except Exception:
+                logger.exception("Session: handle_voice_command failed - dropping audio")
+                return None
+            logger.info("Session: voice LLM completed in %.2fs", time.perf_counter() - llm_started)
 
         # Always log the interpretation, even when no tool was returned —
         # it's useful in the dashboard for debugging mis-recognitions.
@@ -441,6 +448,7 @@ class Session:
             "closeForever": self._dispatch_close_forever,
             "toggleMic": self._dispatch_toggle_log_only,
             "toggleCamera": self._dispatch_toggle_log_only,
+            "toggleAudio": self._dispatch_toggle_log_only,
             "assistantReply": self._dispatch_assistant_reply_log_only,
         }
         handler = handlers.get(tool.name)
@@ -546,6 +554,62 @@ class Session:
 
 
 # --- Helpers --------------------------------------------------------------
+
+def _local_voice_command(transcript: str) -> Optional[CommandResult]:
+    """Deterministic fast path for privacy/audio controls.
+
+    These commands should not depend on a remote model choosing the right
+    tool. The transcript is already ASR output, so keep the parser simple
+    and conservative.
+    """
+    words = set(
+        transcript.lower()
+        .replace(".", " ")
+        .replace(",", " ")
+        .replace("!", " ")
+        .replace("?", " ")
+        .split()
+    )
+    if not words:
+        return None
+
+    if {"there", "hear", "hearing", "hello", "hi"} & words:
+        return CommandResult(
+            tool=ToolCall(
+                name="assistantReply",
+                arguments={"sentence": "I am here and listening."},
+            ),
+            raw_text="assistantReply:presence",
+            provider="local",
+        )
+
+    if "off" in words or "mute" in words:
+        state = "off"
+    elif "on" in words or "unmute" in words:
+        state = "on"
+    else:
+        return None
+
+    if {"mic", "microphone"} & words:
+        return CommandResult(
+            tool=ToolCall(name="toggleMic", arguments={"state": state}),
+            raw_text=f"toggleMic:{state}",
+            provider="local",
+        )
+    if {"camera", "video"} & words:
+        return CommandResult(
+            tool=ToolCall(name="toggleCamera", arguments={"state": state}),
+            raw_text=f"toggleCamera:{state}",
+            provider="local",
+        )
+    if {"audio", "sound", "speaker", "speakers"} & words:
+        return CommandResult(
+            tool=ToolCall(name="toggleAudio", arguments={"state": state}),
+            raw_text=f"toggleAudio:{state}",
+            provider="local",
+        )
+    return None
+
 
 def _looks_like_medication(task: str) -> bool:
     """Heuristic: a 'markDone' task string is medication-shaped if it

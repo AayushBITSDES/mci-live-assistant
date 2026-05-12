@@ -31,7 +31,9 @@ class Settings(BaseSettings):
     google_api_key: str = ""
 
     # --- Models ---
-    whisper_model: str = "medium"
+    # Exhibition default favors latency over perfect transcription. Use
+    # WHISPER_MODEL=medium/large-v3 on a GPU box when accuracy matters more.
+    whisper_model: str = "tiny"
     piper_voice: str = "en_US-amy-medium"
     yolo_model: str = "yolov10s.pt"
     insightface_model: str = "buffalo_l"

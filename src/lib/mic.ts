@@ -1,6 +1,6 @@
 // Continuous-mic capture for voice commands.
 //
-// Pattern: rolling 3-second utterances. We start a MediaRecorder, let it
+// Pattern: rolling short utterances. We start a MediaRecorder, let it
 // run for N ms, stop it, and start a fresh one — each completed recorder
 // produces a STANDALONE webm blob (with its own header) that the server
 // can decode in isolation. The cost is a brief ~50ms gap between
@@ -13,8 +13,8 @@
 // cost of a tiny gap.
 //
 // Why not VAD ? Browser VAD is doable (Web Audio analyser + RMS
-// threshold) but adds 50+ lines and tuning. For Shanta's short
-// commands, fixed 3-second windows are good enough.
+// threshold) but adds tuning risk. For the exhibition, short fixed
+// windows keep command latency predictable.
 
 export type MicChunkHandler = (
   audioB64: string,
@@ -23,7 +23,7 @@ export type MicChunkHandler = (
 ) => void;
 
 export interface MicCaptureOptions {
-  /** Length of each utterance window in ms (default 3000). */
+  /** Length of each utterance window in ms (default 1500). */
   chunkMs?: number;
   /** Skip blobs shorter than this many ms (default 500). */
   minMs?: number;
@@ -52,7 +52,7 @@ export async function startMicCapture(
   onChunk: MicChunkHandler,
   opts: MicCaptureOptions = {},
 ): Promise<MicCaptureHandle> {
-  const chunkMs = opts.chunkMs ?? 3000;
+  const chunkMs = opts.chunkMs ?? 1500;
   const minMs = opts.minMs ?? 500;
   const minBytes = opts.minBytes ?? 800;
 

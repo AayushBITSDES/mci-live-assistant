@@ -106,6 +106,20 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "toggleAudio",
+        "description": (
+            "Toggle spoken/audio output. User said 'audio off', 'sound off', "
+            "'speaker off', or the matching 'on' command."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "state": {"type": "string", "enum": ["on", "off"]},
+            },
+            "required": ["state"],
+        },
+    },
+    {
         "name": "assistantReply",
         "description": (
             "Reply naturally to a short user question or comment that is not a command. "

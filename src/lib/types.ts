@@ -37,7 +37,7 @@ export interface AssistantReplyMessage {
 
 export interface EdgeControlMessage {
   type: "edge_control";
-  target: "mic" | "camera";
+  target: "mic" | "camera" | "audio";
   action: "on" | "off";
   reason?: string;
 }

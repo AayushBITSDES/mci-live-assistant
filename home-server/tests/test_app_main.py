@@ -461,6 +461,90 @@ def test_ws_live_mode_audio_toggle_camera_sends_edge_control(
     assert control_payload["action"] == "off"
 
 
+def test_ws_live_mode_audio_toggle_audio_sends_edge_control(
+    monkeypatch, tmp_path: Path
+) -> None:
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    monkeypatch.setattr("context.event_log.settings", test_settings)
+
+    llm = _RecordingLLM(sentence="(no frames in this test)")
+    fake_heavy = Heavy(
+        processor=_RecordingProcessor([]),       # type: ignore[arg-type]
+        llm=llm,                                 # type: ignore[arg-type]
+        tts=None,
+        whisper=_StubWhisper("audio off"),       # type: ignore[arg-type]
+    )
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.heavy = fake_heavy
+        with client.websocket_connect("/ws/stream?device_id=audio-control-test") as ws:
+            ws.send_text(json.dumps({
+                "type": "audio",
+                "device_id": "audio-control-test",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "audio_b64": base64.b64encode(b"\x00\x01\x02 fake-webm").decode("ascii"),
+                "sample_rate": 16000,
+                "duration_ms": 3000,
+            }))
+            voice_payload = json.loads(ws.receive_text())
+            control_payload = json.loads(ws.receive_text())
+
+    assert voice_payload["type"] == "voice_command"
+    assert voice_payload["tool"] == "toggleAudio"
+    assert control_payload["type"] == "edge_control"
+    assert control_payload["target"] == "audio"
+    assert control_payload["action"] == "off"
+    assert llm.voice_calls == []
+
+
+def test_ws_live_mode_audio_raw_text_falls_back_to_assistant_reply(
+    monkeypatch, tmp_path: Path
+) -> None:
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    monkeypatch.setattr("context.event_log.settings", test_settings)
+
+    llm = _RecordingLLM(sentence="(no frames in this test)")
+    fake_heavy = Heavy(
+        processor=_RecordingProcessor([]),       # type: ignore[arg-type]
+        llm=llm,                                 # type: ignore[arg-type]
+        tts=None,
+        whisper=_StubWhisper("talk to me"),      # type: ignore[arg-type]
+    )
+
+    async def raw_text_command(*, transcript, context_summary):
+        llm.voice_calls.append(transcript)
+        return CommandResult(
+            tool=None,
+            raw_text="I am here with you.",
+            provider="fake",
+        )
+
+    llm.handle_voice_command = raw_text_command  # type: ignore[method-assign]
+
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.heavy = fake_heavy
+        with client.websocket_connect("/ws/stream?device_id=raw-reply-test") as ws:
+            ws.send_text(json.dumps({
+                "type": "audio",
+                "device_id": "raw-reply-test",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "audio_b64": base64.b64encode(b"\x00\x01\x02 fake-webm").decode("ascii"),
+                "sample_rate": 16000,
+                "duration_ms": 3000,
+            }))
+            voice_payload = json.loads(ws.receive_text())
+            reply_payload = json.loads(ws.receive_text())
+
+    assert voice_payload["type"] == "voice_command"
+    assert voice_payload["tool"] is None
+    assert reply_payload["type"] == "assistant_reply"
+    assert reply_payload["sentence"] == "I am here with you."
+
+
 def test_ws_live_mode_audio_assistant_reply_sends_reply_message(
     monkeypatch, tmp_path: Path
 ) -> None:

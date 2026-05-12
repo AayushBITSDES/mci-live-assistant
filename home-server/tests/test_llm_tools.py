@@ -4,7 +4,7 @@ from __future__ import annotations
 from llm.tools import SNOOZE_DURATION_SECONDS, TOOL_DEFINITIONS, to_openai_format, tool_names
 
 
-def test_seven_tools_defined() -> None:
+def test_eight_tools_defined() -> None:
     expected = {
         "markDone",
         "dismissTemporarily",
@@ -12,6 +12,7 @@ def test_seven_tools_defined() -> None:
         "closeForever",
         "toggleMic",
         "toggleCamera",
+        "toggleAudio",
         "assistantReply",
     }
     assert set(tool_names()) == expected
