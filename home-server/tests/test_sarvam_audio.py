@@ -46,6 +46,44 @@ def test_sarvam_asr_posts_multipart_and_reads_transcript() -> None:
     assert b"saaras:v3" in seen["body"]
     assert b'name="mode"' in seen["body"]
     assert b"transcribe" in seen["body"]
+    # No explicit content_type -> falls back to the webm default.
+    assert b"audio/webm" in seen["body"]
+    assert b"audio.webm" in seen["body"]
+
+
+def test_sarvam_asr_honours_provided_content_type() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read()
+        return httpx.Response(200, json={"transcript": "ok"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    asr = SarvamTranscriber(api_key="x", client=client)
+
+    asr.transcribe(b"bytes", content_type="audio/ogg;codecs=opus")
+
+    body = seen["body"]
+    # Codec param preserved in Content-Type; filename derived from base type.
+    assert b"audio/ogg;codecs=opus" in body
+    assert b"audio.ogg" in body
+    assert b"audio/webm" not in body
+
+
+def test_sarvam_asr_unknown_content_type_uses_bin_filename() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read()
+        return httpx.Response(200, json={"transcript": "ok"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    asr = SarvamTranscriber(api_key="x", client=client)
+
+    asr.transcribe(b"bytes", content_type="audio/unknown-thing")
+
+    assert b"audio/unknown-thing" in seen["body"]
+    assert b"audio.bin" in seen["body"]
 
 
 def test_sarvam_asr_empty_audio_short_circuits() -> None:

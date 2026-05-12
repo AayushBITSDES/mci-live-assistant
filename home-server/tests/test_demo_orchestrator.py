@@ -144,6 +144,32 @@ def test_default_face_profile_supports_exhibition_guide() -> None:
     assert "Anya" in first[0]["sentence"]
 
 
+def test_face_cue_rearms_after_rearm_delay() -> None:
+    demo = DemoOrchestrator(face_cue_rearm_seconds=10)
+    t0 = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    first = demo.trigger_face_cue("Anya", now=t0)
+    inside = demo.trigger_face_cue("Anya", now=t0 + timedelta(seconds=5))
+    outside = demo.trigger_face_cue("Anya", now=t0 + timedelta(seconds=15))
+
+    assert first and first[0]["type"] == "assistant_reply"
+    assert inside == []
+    assert outside and outside[0]["type"] == "assistant_reply"
+
+
+def test_reset_face_cues_allows_immediate_refire() -> None:
+    demo = DemoOrchestrator(face_cue_rearm_seconds=600)
+
+    first = demo.trigger_face_cue("Anya")
+    blocked = demo.trigger_face_cue("Anya")
+    demo.reset_face_cues()
+    after_reset = demo.trigger_face_cue("Anya")
+
+    assert first and first[0]["type"] == "assistant_reply"
+    assert blocked == []
+    assert after_reset and after_reset[0]["type"] == "assistant_reply"
+
+
 def test_non_command_voice_gets_contextual_assistant_reply() -> None:
     demo = DemoOrchestrator()
     demo.set_visitor_name("Maya")

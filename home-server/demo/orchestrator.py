@@ -38,10 +38,15 @@ class DemoOrchestrator:
         medicine_reminder_delay_seconds: float = 30.0,
         stove_first_reminder_seconds: float = 30.0,
         stove_escalation_seconds: float = 60.0,
+        face_cue_rearm_seconds: float = 60.0,
     ) -> None:
         self.state = DemoState()
         self._face_profiles = dict(DEFAULT_FACE_PROFILES if face_profiles is None else face_profiles)
-        self._face_cue_shown: set[str] = set()
+        # name -> last cue timestamp. A name re-arms once it has been
+        # unseen (or untriggered) for at least face_cue_rearm_seconds, so
+        # the same visitor can hear the cue again in a fresh round.
+        self._face_cue_last_at: dict[str, datetime] = {}
+        self._face_cue_rearm_delay = timedelta(seconds=face_cue_rearm_seconds)
         self._alert_seq = 0
         self._medicine_delay = timedelta(seconds=medicine_reminder_delay_seconds)
         self._stove_first_delay = timedelta(seconds=stove_first_reminder_seconds)
@@ -202,17 +207,27 @@ class DemoOrchestrator:
             self.state.caregiver_alerts[alert_id]["status"] = "acknowledged"
         return {"type": "caregiver_ack", "alert_id": alert_id, "ts": time.time()}
 
-    def trigger_face_cue(self, name: str) -> list[dict[str, Any]]:
-        if name in self._face_cue_shown:
+    def trigger_face_cue(self, name: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
+        now = _aware(now)
+        last = self._face_cue_last_at.get(name)
+        if last is not None and now - last < self._face_cue_rearm_delay:
             return []
         profile = self._face_profiles.get(name)
         if not profile:
             return []
-        self._face_cue_shown.add(name)
+        self._face_cue_last_at[name] = now
         relationship = profile.get("relationship", "visitor")
         cue = profile.get("cue", "")
         sentence = f"{name} is {relationship}. {cue}"
         return [{"type": "assistant_reply", "sentence": sentence, "ts": time.time()}]
+
+    def reset_face_cues(self) -> None:
+        """Forget every previously-shown face cue.
+
+        Call this when an operator resets the demo for a new visitor cycle
+        so cues fire fresh even when the rearm timer hasn't elapsed.
+        """
+        self._face_cue_last_at.clear()
 
     def handle_voice_conversation(self, utterance: str) -> list[dict[str, Any]]:
         _ = utterance

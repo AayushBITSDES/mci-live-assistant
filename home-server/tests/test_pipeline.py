@@ -164,9 +164,16 @@ class _FakeWhisper:
         self._transcript = transcript
         self._raise = raise_on_call
         self.calls: list[bytes] = []
+        self.content_types: list[str | None] = []
 
-    def transcribe(self, audio_bytes: bytes) -> str:
+    def transcribe(
+        self,
+        audio_bytes: bytes,
+        *,
+        content_type: str | None = None,
+    ) -> str:
         self.calls.append(audio_bytes)
+        self.content_types.append(content_type)
         if self._raise:
             raise RuntimeError("whisper blew up")
         return self._transcript

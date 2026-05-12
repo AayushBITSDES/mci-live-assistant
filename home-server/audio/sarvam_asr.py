@@ -14,6 +14,27 @@ import httpx
 logger = logging.getLogger(__name__)
 
 SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
+DEFAULT_AUDIO_CONTENT_TYPE = "audio/webm"
+
+# Filename hint sent to Sarvam. The MIME header is authoritative, but the
+# filename extension is a useful secondary signal for servers that route
+# decoding by extension. Keys are the bare type ("audio/X") with codec
+# params stripped before lookup.
+_FILENAME_BY_TYPE: dict[str, str] = {
+    "audio/webm": "audio.webm",
+    "audio/ogg": "audio.ogg",
+    "audio/mp4": "audio.m4a",
+    "audio/mpeg": "audio.mp3",
+    "audio/wav": "audio.wav",
+    "audio/wave": "audio.wav",
+    "audio/x-wav": "audio.wav",
+}
+
+
+def _audio_filename_for(content_type: str) -> str:
+    """Pick a filename whose extension matches the given content type."""
+    base = content_type.split(";", 1)[0].strip().lower()
+    return _FILENAME_BY_TYPE.get(base, "audio.bin")
 
 
 class SarvamTranscriber:
@@ -46,9 +67,21 @@ class SarvamTranscriber:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def transcribe(self, audio_bytes: bytes) -> str:
+    def transcribe(
+        self,
+        audio_bytes: bytes,
+        *,
+        content_type: str | None = None,
+    ) -> str:
         if not audio_bytes:
             return ""
+
+        # The browser's MediaRecorder chooses one of webm/opus, ogg/opus,
+        # or mp4 depending on the platform. Honouring what the caller
+        # actually recorded avoids telling Sarvam "this is webm" when it
+        # is in fact ogg, which can produce a degraded or empty transcript.
+        ct = (content_type or "").strip() or DEFAULT_AUDIO_CONTENT_TYPE
+        filename = _audio_filename_for(ct)
 
         data: dict[str, Any] = {
             "model": self._model,
@@ -60,7 +93,7 @@ class SarvamTranscriber:
             SARVAM_STT_URL,
             headers={"api-subscription-key": self._api_key},
             data=data,
-            files={"file": ("audio.webm", audio_bytes, "audio/webm")},
+            files={"file": (filename, audio_bytes, ct)},
         )
         response.raise_for_status()
         payload = response.json()

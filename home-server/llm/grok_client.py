@@ -87,6 +87,8 @@ class GrokClient(LLMClient):
         choice = response.choices[0]
         raw = (choice.message.content or "").strip()
         tool = self._extract_tool_call(choice.message)
+        if tool is None and raw:
+            tool = self._fallback_from_text(raw, transcript)
         return CommandResult(tool=tool, raw_text=raw, provider=self.provider_name)
 
     # --- Parsing helpers --------------------------------------------------
@@ -122,3 +124,38 @@ class GrokClient(LLMClient):
         except json.JSONDecodeError:
             args = {}
         return ToolCall(name=first.function.name, arguments=args)
+
+    @staticmethod
+    def _fallback_from_text(raw: str, transcript: str) -> Optional[ToolCall]:
+        import re
+        # XML-style
+        if "<tool_call" in raw or "<function_call" in raw:
+            m = re.search(r'<(?:tool_call|function_call)[^>]*name=["\']([^"\']+)["\']', raw)
+            if not m:
+                m = re.search(r'name=["\']([^"\']+)["\'][^>]*>', raw)
+            if m:
+                name = m.group(1)
+                args = {}
+                for p in re.finditer(r'<parameter name=["\']([^"\']+)["\']>(.*?)</parameter>', raw, re.DOTALL):
+                    args[p.group(1)] = p.group(2).strip()
+                return ToolCall(name=name, arguments=args)
+
+        # Plain-text style: "call assistantReply with sentence is You were..."
+        m = re.search(r'(?:call|tool)\s+(\w+)', raw, re.IGNORECASE)
+        if m:
+            name = m.group(1)
+            args = {}
+            for p in re.finditer(r'(\w+)\s+is\s+([^,\n]+)', raw):
+                args[p.group(1)] = p.group(2).strip()
+            return ToolCall(name=name, arguments=args)
+
+        text = (raw or "").lower() + " " + (transcript or "").lower()
+        if any(k in text for k in ("wrong", "not right", "incorrect", "no")):
+            reason = transcript or raw
+            return ToolCall(name="flagWrong", arguments={"reason": reason})
+        if any(k in text for k in ("never", "stop reminding", "don't remind", "no more")):
+            category = "stove_reminder" if "stove" in text else "medicine_reminder"
+            return ToolCall(name="closeForever", arguments={"category": category})
+        if any(k in text for k in ("remind me later", "not now", "in a bit")):
+            return ToolCall(name="dismissTemporarily", arguments={})
+        return None

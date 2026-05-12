@@ -69,3 +69,47 @@ def test_face_observation_maps_to_one_cue() -> None:
     assert first[0]["type"] == "assistant_reply"
     assert "Anya" in first[0]["sentence"]
     assert second == []
+
+
+def test_face_observation_refires_after_rearm_gap() -> None:
+    # A visitor who leaves the frame and returns later should hear the
+    # cue again. Continuous presence should NOT re-fire even past the
+    # rearm window, because last-seen keeps getting refreshed.
+    demo = DemoOrchestrator(face_cue_rearm_seconds=10)
+    adapter = ObservationAdapter(face_cue_rearm_seconds=10)
+    t0 = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    first = adapter.apply(demo, _detection(t0, names=["Anya"]))
+    still_inside = adapter.apply(demo, _detection(t0 + timedelta(seconds=5), names=["Anya"]))
+    # Continuous sightings up to and past the rearm window: still no re-fire.
+    continuous = adapter.apply(demo, _detection(t0 + timedelta(seconds=12), names=["Anya"]))
+    # Now Anya is absent for >10s. Frames at t=20s, t=21s have no recognized
+    # names — the dict isn't touched. At t=33s she comes back: last-seen was
+    # t=12s, gap is 21s > 10s, so the cue should re-fire.
+    _absent_a = adapter.apply(demo, _detection(t0 + timedelta(seconds=20)))
+    _absent_b = adapter.apply(demo, _detection(t0 + timedelta(seconds=21)))
+    rearm = adapter.apply(demo, _detection(t0 + timedelta(seconds=33), names=["Anya"]))
+
+    assert first and first[0]["type"] == "assistant_reply"
+    assert still_inside == []
+    assert continuous == []
+    assert rearm and rearm[0]["type"] == "assistant_reply"
+
+
+def test_reset_clears_face_dedup() -> None:
+    # An operator-initiated reset should let cues fire again on the very
+    # next frame, even if the rearm window has not yet elapsed.
+    demo = DemoOrchestrator(face_cue_rearm_seconds=600)
+    adapter = ObservationAdapter(face_cue_rearm_seconds=600)
+    t0 = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    first = adapter.apply(demo, _detection(t0, names=["Anya"]))
+    blocked = adapter.apply(demo, _detection(t0 + timedelta(seconds=1), names=["Anya"]))
+
+    adapter.reset()
+    demo.reset_face_cues()
+    after_reset = adapter.apply(demo, _detection(t0 + timedelta(seconds=2), names=["Anya"]))
+
+    assert first and first[0]["type"] == "assistant_reply"
+    assert blocked == []
+    assert after_reset and after_reset[0]["type"] == "assistant_reply"

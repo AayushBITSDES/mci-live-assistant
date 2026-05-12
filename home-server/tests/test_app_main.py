@@ -215,8 +215,15 @@ class _StubWhisper:
 
     def __init__(self, transcript: str) -> None:
         self._transcript = transcript
+        self.last_content_type: str | None = None
 
-    def transcribe(self, audio_bytes: bytes) -> str:
+    def transcribe(
+        self,
+        audio_bytes: bytes,
+        *,
+        content_type: str | None = None,
+    ) -> str:
+        self.last_content_type = content_type
         return self._transcript
 
 

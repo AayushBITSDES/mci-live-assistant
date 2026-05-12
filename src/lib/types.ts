@@ -70,9 +70,13 @@ export interface AudioChunkMessage {
   type: "audio";
   device_id: string;
   timestamp: string;
-  audio_b64: string;        // base64-encoded webm/opus from MediaRecorder
+  audio_b64: string;        // base64-encoded MediaRecorder output
   sample_rate: number;      // browser default is 48000 for webm/opus
   duration_ms: number;
+  // The actual MIME the recorder produced, e.g. "audio/webm;codecs=opus"
+  // or "audio/mp4". The server forwards this to the ASR adapter so the
+  // upload Content-Type matches the bytes; omitted only if unknown.
+  mime_type?: string;
 }
 
 export interface DemoActionMessage {

@@ -82,6 +82,21 @@ class Heavy:
     tts: Optional[object] = None          # PiperSynthesizer when available
     whisper: Optional[object] = None      # ASR provider when available
 
+    def __init__(
+        self,
+        processor: object,
+        llm: LLMClient,
+        *,
+        tts: Optional[object] = None,
+        whisper: Optional[object] = None,
+        vision_provider: str = "opencv",
+    ) -> None:
+        self.processor = processor
+        self.llm = llm
+        self.tts = tts
+        self.whisper = whisper
+        self.vision_provider = vision_provider
+
     @classmethod
     def from_settings(cls, settings: Settings) -> Optional["Heavy"]:
         """Try to construct everything. Returns None on any required failure.
@@ -414,7 +429,11 @@ class Session:
 
         asr_started = time.perf_counter()
         try:
-            transcript = await asyncio.to_thread(whisper.transcribe, audio_bytes)
+            transcript = await asyncio.to_thread(
+                whisper.transcribe,
+                audio_bytes,
+                content_type=audio.mime_type,
+            )
         except Exception:
             logger.exception("Session: Whisper failed - skipping audio chunk")
             return None

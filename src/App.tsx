@@ -166,7 +166,7 @@ function App() {
     let handleSampleRate = 16000;
 
     startMicCapture(
-      (audioB64, durationMs, _mimeType) => {
+      (audioB64, durationMs, mimeType) => {
         // Identity guard: if a stale capture finishes after toggle-off,
         // ignore its trailing chunk so we don't post stale audio.
         if (cancelled) return;
@@ -177,6 +177,7 @@ function App() {
           audio_b64: audioB64,
           sample_rate: handleSampleRate,
           duration_ms: Math.round(durationMs),
+          mime_type: mimeType || undefined,
         });
       },
       { chunkMs: 1500, minMs: 350 },
