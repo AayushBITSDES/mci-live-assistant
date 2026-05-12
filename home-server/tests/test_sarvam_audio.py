@@ -64,8 +64,9 @@ def test_sarvam_asr_honours_provided_content_type() -> None:
     asr.transcribe(b"bytes", content_type="audio/ogg;codecs=opus")
 
     body = seen["body"]
-    # Codec param preserved in Content-Type; filename derived from base type.
-    assert b"audio/ogg;codecs=opus" in body
+    # Codec params are stripped before upload; filename derived from base type.
+    assert b"audio/ogg" in body
+    assert b"codecs=opus" not in body
     assert b"audio.ogg" in body
     assert b"audio/webm" not in body
 

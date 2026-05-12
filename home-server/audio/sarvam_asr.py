@@ -81,6 +81,7 @@ class SarvamTranscriber:
         # actually recorded avoids telling Sarvam "this is webm" when it
         # is in fact ogg, which can produce a degraded or empty transcript.
         ct = (content_type or "").strip() or DEFAULT_AUDIO_CONTENT_TYPE
+        base_ct = ct.split(";", 1)[0].strip()
         filename = _audio_filename_for(ct)
 
         data: dict[str, Any] = {
@@ -93,7 +94,7 @@ class SarvamTranscriber:
             SARVAM_STT_URL,
             headers={"api-subscription-key": self._api_key},
             data=data,
-            files={"file": (filename, audio_bytes, ct)},
+            files={"file": (filename, audio_bytes, base_ct)},
         )
         response.raise_for_status()
         payload = response.json()
