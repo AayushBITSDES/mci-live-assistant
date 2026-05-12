@@ -20,6 +20,7 @@ class SarvamSynthesizer:
         model: str = "bulbul:v3",
         speaker: str = "shubh",
         language_code: str = "en-IN",
+        speech_sample_rate: int = 16000,
         timeout: float = 30.0,
         client: httpx.Client | None = None,
     ) -> None:
@@ -29,6 +30,7 @@ class SarvamSynthesizer:
         self._model = model
         self._speaker = speaker
         self._language_code = language_code
+        self._speech_sample_rate = speech_sample_rate
         self._owns_client = client is None
         self._client = client or httpx.Client(timeout=timeout)
 
@@ -58,6 +60,7 @@ class SarvamSynthesizer:
                 "target_language_code": self._language_code,
                 "model": self._model,
                 "speaker": self._speaker,
+                "speech_sample_rate": self._speech_sample_rate,
             },
         )
         response.raise_for_status()

@@ -100,6 +100,7 @@ class AssistantReplyMessage(BaseModel):
     """A short spoken/text response for natural user conversation."""
     type: Literal["assistant_reply"] = "assistant_reply"
     sentence: str
+    audio_b64: Optional[str] = None
 
 
 class EdgeControlMessage(BaseModel):

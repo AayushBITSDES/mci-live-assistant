@@ -49,6 +49,7 @@ function App() {
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [micActive, setMicActive] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
+  const [transcriptBubble, setTranscriptBubble] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -128,10 +129,27 @@ function App() {
     }
   }, [state.lastNudge, audioEnabled]);
 
+  // Mirror the latest transcribed phrase into a transient bubble so the
+  // user can see what the server heard — useful when commands seem to
+  // misfire. Each new transcript resets the auto-clear timer.
+  useEffect(() => {
+    const cmd = state.lastVoiceCommand;
+    if (!cmd || !cmd.transcript) return;
+    setTranscriptBubble(cmd.transcript);
+    const timer = window.setTimeout(() => setTranscriptBubble(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [state.lastVoiceCommand]);
+
   // Speak natural assistant replies (voice conversation / face cues).
+  // Prefer server-rendered Sarvam audio over the browser's robotic
+  // speechSynthesis; fall back only when audio_b64 is missing.
   useEffect(() => {
     if (!audioEnabled || !state.lastAssistantReply) return;
-    playChimeAndSpeak(state.lastAssistantReply.sentence);
+    if (state.lastAssistantReply.audio_b64) {
+      playChimeAndAudioB64(state.lastAssistantReply.audio_b64);
+    } else {
+      playChimeAndSpeak(state.lastAssistantReply.sentence);
+    }
   }, [state.lastAssistantReply, audioEnabled]);
 
   // Backend voice tools request actual media toggles on the browser edge.
@@ -180,7 +198,7 @@ function App() {
           mime_type: mimeType || undefined,
         });
       },
-      { chunkMs: 1500, minMs: 350 },
+      { chunkMs: 5000, minMs: 600 },
     )
       .then((handle) => {
         if (cancelled) {
@@ -327,7 +345,7 @@ function App() {
             disabled={!isConnected}
             title={
               isConnected
-                ? "Toggle voice commands (mic streams 3-second utterances)"
+                ? "Toggle voice commands (mic streams 5-second utterances)"
                 : "Connect first"
             }
             type="button"
@@ -337,6 +355,13 @@ function App() {
           </button>
           {micError && <span className="mic-error">{micError}</span>}
         </div>
+
+        {transcriptBubble && (
+          <div className="transcript-bubble" role="status" aria-live="polite">
+            <span className="transcript-label">you said</span>
+            <span className="transcript-text">{transcriptBubble}</span>
+          </div>
+        )}
 
         {state.lastAssistantReply && (
           <div className="assistant-reply" role="status" aria-live="polite">

@@ -32,6 +32,7 @@ export interface VoiceCommandMessage {
 export interface AssistantReplyMessage {
   type: "assistant_reply";
   sentence: string;
+  audio_b64?: string | null;
   ts?: number;
 }
 

@@ -22,6 +22,7 @@ React client growing a MediaRecorder send path.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import uuid
@@ -89,6 +90,8 @@ async def lifespan(app: FastAPI):
     # Try to build the live pipeline. Missing ML deps / weights / API
     # keys fall back to the debug stub without crashing the server.
     app.state.heavy = Heavy.from_settings(settings)
+    if app.state.heavy is not None:
+        await app.state.heavy.prewarm_tts_cache()
 
     logger.info(
         "Home server ready | provider=%s | fps=%d | mode=%s | api_key=%s",
@@ -179,6 +182,7 @@ def create_app() -> FastAPI:
                 "server_time": datetime.now(timezone.utc).isoformat(),
             }]
 
+        await _enrich_messages_with_audio(app, messages)
         await _broadcast_caregiver_messages(app, messages)
         await _broadcast_edge_messages(app, messages)
         return {"messages": messages}
@@ -269,6 +273,7 @@ def create_app() -> FastAPI:
                             demo: DemoOrchestrator = ws.app.state.demo_orchestrator
                             adapter: ObservationAdapter = ws.app.state.observation_adapter
                             messages = adapter.apply(demo, observation)
+                            await _enrich_messages_with_audio(ws.app, messages)
                             await _broadcast_caregiver_messages(ws.app, messages)
                             await _broadcast_edge_messages(ws.app, messages)
                     else:
@@ -296,6 +301,9 @@ def create_app() -> FastAPI:
                                 await ws.send_text(control.model_dump_json())
                             reply = _assistant_reply_from_command(command)
                             if reply is not None:
+                                reply_audio = await _maybe_synthesize_reply(ws.app, reply.sentence)
+                                if reply_audio:
+                                    reply = reply.model_copy(update={"audio_b64": reply_audio})
                                 await ws.send_text(reply.model_dump_json())
                             demo_messages: list[dict[str, Any]] = []
                             demo: DemoOrchestrator = ws.app.state.demo_orchestrator
@@ -304,6 +312,7 @@ def create_app() -> FastAPI:
                                     command.tool.name,
                                     command.tool.arguments or {},
                                 )
+                            await _enrich_messages_with_audio(ws.app, demo_messages)
                             await _broadcast_caregiver_messages(ws.app, demo_messages)
                             for message in _edge_messages(demo_messages):
                                 await ws.send_text(json.dumps(message))
@@ -319,6 +328,7 @@ def create_app() -> FastAPI:
                 elif msg_type == "demo_action":
                     demo: DemoOrchestrator = ws.app.state.demo_orchestrator
                     messages = _messages_for_demo_action(demo, parsed)
+                    await _enrich_messages_with_audio(ws.app, messages)
                     await _broadcast_caregiver_messages(ws.app, messages)
                     await _broadcast_edge_messages(ws.app, messages)
 
@@ -422,6 +432,64 @@ def _assistant_reply_from_command(command) -> AssistantReplyMessage | None:
     if not sentence:
         return None
     return AssistantReplyMessage(sentence=sentence)
+
+
+async def _synthesize_sentence(heavy: Heavy, sentence: str) -> bytes | None:
+    """Return raw WAV bytes for ``sentence``, preferring the pre-warmed cache.
+
+    Falls back to a live Sarvam call on cache miss. Returns ``None`` on
+    empty input or synthesis failure so callers can keep the text-only
+    message.
+    """
+    sentence = sentence.strip()
+    if not sentence or heavy.tts is None:
+        return None
+    cached = heavy.tts_cache.get(sentence)
+    if cached:
+        return cached
+    try:
+        wav_bytes = await asyncio.to_thread(heavy.tts.synthesize, sentence)
+    except Exception:
+        logger.exception("TTS synthesis failed for %r", sentence[:60])
+        return None
+    return wav_bytes or None
+
+
+async def _enrich_messages_with_audio(
+    app: FastAPI, messages: list[dict[str, Any]]
+) -> None:
+    """Populate ``audio_b64`` on nudge/assistant_reply messages via Sarvam TTS.
+
+    Demo orchestrator and observation adapter messages arrive without
+    server-rendered audio. If TTS is available we synthesize once here so
+    the edge client can play a real voice instead of falling back to the
+    browser's robotic speechSynthesis. Pre-warmed sentences skip the
+    network call entirely.
+    """
+    heavy: Heavy | None = getattr(app.state, "heavy", None)
+    if heavy is None or heavy.tts is None:
+        return
+    for message in messages:
+        if message.get("type") not in {"nudge", "assistant_reply"}:
+            continue
+        if message.get("audio_b64"):
+            continue
+        sentence = str(message.get("sentence", "")).strip()
+        if not sentence:
+            continue
+        wav_bytes = await _synthesize_sentence(heavy, sentence)
+        if wav_bytes:
+            message["audio_b64"] = base64.b64encode(wav_bytes).decode("ascii")
+
+
+async def _maybe_synthesize_reply(app: FastAPI, sentence: str) -> str | None:
+    heavy: Heavy | None = getattr(app.state, "heavy", None)
+    if heavy is None:
+        return None
+    wav_bytes = await _synthesize_sentence(heavy, sentence)
+    if not wav_bytes:
+        return None
+    return base64.b64encode(wav_bytes).decode("ascii")
 
 
 async def _maybe_emit_debug_nudge(frame_counter: int):

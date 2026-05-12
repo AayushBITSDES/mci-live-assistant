@@ -64,6 +64,24 @@ _SAFETY_KINDS = {
 }
 
 
+# Replies the app emits verbatim across many sessions. Pre-synthesizing
+# them at startup means the corresponding voice command path skips the
+# Sarvam TTS round trip entirely (~600-1000ms shaved per hit). If any
+# of these strings drift out of sync with the call sites that emit
+# them, the cache simply misses and the live TTS path takes over —
+# no correctness risk, just lost speed. Source call sites are noted
+# inline so future renames stay coordinated.
+PRESYNTH_REPLIES: tuple[str, ...] = (
+    # pipeline._local_voice_command (hello/presence)
+    "I am here and listening.",
+    # demo.orchestrator.DemoOrchestrator.handle_voice_tool (markDone)
+    "Got it, your vitamin is marked done.",
+    "Got it, the stove risk is marked resolved.",
+    # demo.orchestrator.DemoOrchestrator.resolve_stove
+    "Thanks, I can see you are checking the stove.",
+)
+
+
 NudgeCallback = Callable[[NudgeMessage], Awaitable[None]]
 
 
@@ -96,6 +114,43 @@ class Heavy:
         self.tts = tts
         self.whisper = whisper
         self.vision_provider = vision_provider
+        # Sentence -> raw audio bytes (WAV). Populated by
+        # ``prewarm_tts_cache`` at startup. Empty when TTS is unavailable
+        # or the warm-up call failed; callers should treat a miss as
+        # "synthesize live".
+        self.tts_cache: dict[str, bytes] = {}
+
+    async def prewarm_tts_cache(
+        self, sentences: tuple[str, ...] = PRESYNTH_REPLIES
+    ) -> None:
+        """Synthesize each deterministic reply once and remember the bytes.
+
+        Runs the synth calls in parallel via ``asyncio.to_thread`` so a
+        4-sentence warm-up only blocks startup for as long as the slowest
+        single call (typically ~1-2s once Sarvam is warm). Failures are
+        logged and skipped; a missing cache entry just means the live
+        TTS path runs for that sentence.
+        """
+        if self.tts is None or not sentences:
+            return
+
+        async def _synth(sentence: str) -> tuple[str, bytes]:
+            try:
+                wav = await asyncio.to_thread(self.tts.synthesize, sentence)
+            except Exception:
+                logger.exception("Heavy: TTS pre-warm failed for %r", sentence)
+                return sentence, b""
+            return sentence, wav or b""
+
+        results = await asyncio.gather(*(_synth(s) for s in sentences))
+        for sentence, wav in results:
+            if wav:
+                self.tts_cache[sentence] = wav
+        logger.info(
+            "Heavy: TTS cache primed | %d/%d entries",
+            len(self.tts_cache),
+            len(sentences),
+        )
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Optional["Heavy"]:
@@ -445,6 +500,12 @@ class Session:
             return None
 
         logger.info("Session: audio transcript=%r", transcript)
+        if _is_filler_transcript(transcript):
+            # End-to-end ASR (Sarvam/Whisper) hallucinates short filler
+            # words on near-silence. Drop them before they cost an LLM
+            # call and a spurious response.
+            logger.info("Session: dropping filler/noise transcript")
+            return None
         command = _local_voice_command(transcript)
         if command is None:
             llm_started = time.perf_counter()
@@ -597,6 +658,35 @@ class Session:
 
 
 # --- Helpers --------------------------------------------------------------
+
+# Single-word transcripts the ASR commonly hallucinates on silence or
+# background noise. None of these are useful as commands on their own,
+# and forwarding them to the LLM produces a useless "I'm not sure what
+# you want" reply that the TTS then speaks back at the user.
+_FILLER_WORDS: frozenset[str] = frozenset({
+    "okay", "ok", "k", "kay",
+    "yeah", "yep", "yup", "yah",
+    "uh", "um", "uhh", "umm",
+    "mm", "mmm", "hmm", "huh",
+    "ah", "oh", "eh", "huh",
+    "so", "the", "a", "an", "of", "to",
+})
+
+
+def _is_filler_transcript(transcript: str) -> bool:
+    """Return True for transcripts that are obvious ASR noise.
+
+    Only filters SINGLE-word transcripts. Multi-word utterances like
+    "okay I'll do it" are real intent and should reach the LLM. Real
+    short commands ("hello", "yes", "no", "done", "stop") are NOT in
+    the filler set so they still get through.
+    """
+    cleaned = transcript.lower().strip(".,!?;:- ")
+    if not cleaned:
+        return True
+    words = cleaned.split()
+    return len(words) == 1 and words[0] in _FILLER_WORDS
+
 
 def _local_voice_command(transcript: str) -> Optional[CommandResult]:
     """Deterministic fast path for privacy/audio controls.
