@@ -50,3 +50,6 @@ logs/
 
 # --- Runtime data (JSONL audit trail, face embeddings, etc.) ---
 home-server/storage/
+
+# --- Local ML model weights ---
+*.pt
