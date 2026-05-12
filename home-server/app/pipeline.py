@@ -41,7 +41,6 @@ from app.models import AudioChunkMessage, FrameMessage, NudgeMessage, NudgePrior
 from context.builder import build_summary
 from context.event_log import append_event
 from context.manager import ContextManager
-from detection.processor import FrameProcessor
 from llm.base import CommandResult, LLMClient, ToolCall
 from llm.tools import SNOOZE_DURATION_SECONDS
 from triggers.gate import TriggerGate
@@ -78,10 +77,10 @@ class Heavy:
     optional — text-only nudges still work without Piper, and the
     audio path becomes a no-op log without Whisper.
     """
-    processor: FrameProcessor
+    processor: object
     llm: LLMClient
     tts: Optional[object] = None          # PiperSynthesizer when available
-    whisper: Optional[object] = None      # WhisperTranscriber when available
+    whisper: Optional[object] = None      # ASR provider when available
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Optional["Heavy"]:
@@ -94,25 +93,25 @@ class Heavy:
         TTS failure does not kill Heavy (it's optional).
         """
         try:
-            from detection.faces import FaceRecognizer
-            from detection.yolo import YoloDetector
             from llm.factory import build_client
         except ImportError as exc:
             logger.warning("Heavy: required imports missing (%s) -> debug stub", exc)
             return None
 
-        # YoloDetector / FaceRecognizer / build_client all do LAZY imports
-        # inside their constructors. So missing torch/ultralytics/insightface
-        # surfaces as ImportError at instantiation time, not at module
-        # import time. Catch broadly here so any heavy dep gap degrades
-        # gracefully instead of crashing the server at startup.
         try:
-            yolo = YoloDetector(model_path=settings.yolo_model)
-            faces = FaceRecognizer(
-                store_path=settings.faces_dir / "embeddings.json",
-                model_name=settings.insightface_model,
-            )
-            processor = FrameProcessor(yolo=yolo, faces=faces)
+            if settings.vision_provider == "opencv":
+                from detection.opencv_processor import OpenCVFrameProcessor
+                processor = OpenCVFrameProcessor(reference_dir=settings.reference_dir)
+            else:
+                from detection.faces import FaceRecognizer
+                from detection.processor import FrameProcessor
+                from detection.yolo import YoloDetector
+                yolo = YoloDetector(model_path=settings.yolo_model)
+                faces = FaceRecognizer(
+                    store_path=settings.faces_dir / "embeddings.json",
+                    model_name=settings.insightface_model,
+                )
+                processor = FrameProcessor(yolo=yolo, faces=faces)
         except (ImportError, OSError, RuntimeError, ValueError) as exc:
             logger.warning("Heavy: vision pipeline failed to load (%s) -> debug stub", exc)
             return None
@@ -129,23 +128,47 @@ class Heavy:
 
         # TTS is optional; client has speechSynthesis fallback.
         tts: Optional[object] = None
-        try:
-            from audio.tts import PiperSynthesizer  # heavy import
-            tts = PiperSynthesizer(voice_name=settings.piper_voice)
-        except (ImportError, OSError, RuntimeError, TypeError) as exc:
-            logger.info("Heavy: TTS unavailable (%s) -> nudges will be text-only", exc)
+        if settings.tts_provider == "sarvam":
+            try:
+                from audio.sarvam_tts import SarvamSynthesizer
+                tts = SarvamSynthesizer(
+                    api_key=settings.sarvam_api_key,
+                    model=settings.sarvam_tts_model,
+                    speaker=settings.sarvam_tts_speaker,
+                    language_code=settings.sarvam_language_code,
+                )
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                logger.info("Heavy: Sarvam TTS unavailable (%s) -> browser TTS fallback", exc)
+        elif settings.tts_provider == "piper":
+            try:
+                from audio.tts import PiperSynthesizer  # heavy import
+                tts = PiperSynthesizer(voice_name=settings.piper_voice)
+            except (ImportError, OSError, RuntimeError, TypeError) as exc:
+                logger.info("Heavy: Piper TTS unavailable (%s) -> browser TTS fallback", exc)
 
-        # Whisper is optional; without it the audio path is a no-op log.
+        # ASR is optional; without it the audio path is a no-op log.
         whisper: Optional[object] = None
-        try:
-            from audio.asr import WhisperTranscriber  # heavy import
-            whisper = WhisperTranscriber(model_size=settings.whisper_model)
-        except (ImportError, OSError, RuntimeError) as exc:
-            logger.info("Heavy: Whisper unavailable (%s) -> voice commands disabled", exc)
+        if settings.asr_provider == "sarvam":
+            try:
+                from audio.sarvam_asr import SarvamTranscriber
+                whisper = SarvamTranscriber(
+                    api_key=settings.sarvam_api_key,
+                    model=settings.sarvam_stt_model,
+                    language_code=settings.sarvam_language_code,
+                )
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                logger.info("Heavy: Sarvam ASR unavailable (%s) -> voice commands disabled", exc)
+        elif settings.asr_provider == "whisper":
+            try:
+                from audio.asr import WhisperTranscriber  # heavy import
+                whisper = WhisperTranscriber(model_size=settings.whisper_model)
+            except (ImportError, OSError, RuntimeError) as exc:
+                logger.info("Heavy: Whisper unavailable (%s) -> voice commands disabled", exc)
 
         logger.info(
-            "Heavy: ready | provider=%s | tts=%s | asr=%s",
+            "Heavy: ready | provider=%s | vision=%s | tts=%s | asr=%s",
             settings.active_llm_provider,
+            settings.vision_provider,
             "on" if tts is not None else "off",
             "on" if whisper is not None else "off",
         )
@@ -215,7 +238,7 @@ class Session:
 
     # --- Frame path --------------------------------------------------------
 
-    async def handle_frame(self, frame: FrameMessage) -> None:
+    async def handle_frame(self, frame: FrameMessage):
         """Run vision + gate, queue any candidates. Returns immediately.
 
         Vision + rule evaluation are synchronous awaits (~30ms on GPU,
@@ -223,13 +246,13 @@ class Session:
         worker, decoupled from frame arrival.
         """
         if self._closed:
-            return
+            return None
 
         try:
             image_bytes = base64.b64decode(frame.image_b64)
         except Exception as exc:
             logger.warning("Session: bad image_b64 (%s) - skipping frame", exc)
-            return
+            return None
 
         try:
             _full, reduced = await self._heavy.processor.process(
@@ -244,13 +267,14 @@ class Session:
         except Exception:
             logger.exception("Session: TriggerGate raised - skipping frame")
             self._gate_events.clear()
-            return
+            return None
 
         # Flush state-change events to the audit log off-thread.
         await self._flush_gate_events()
 
         for candidate in candidates:
             self._enqueue_or_drop_oldest(candidate, frame.image_b64)
+        return reduced
 
     # --- Internals ---------------------------------------------------------
 

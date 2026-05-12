@@ -609,7 +609,7 @@ def test_heavy_returns_none_when_required_imports_missing(monkeypatch) -> None:
     monkeypatch.setattr(builtins, "__import__", _no_yolo)
 
     from app.config import Settings
-    fake = Settings()
+    fake = Settings(vision_provider="yolo", active_llm_provider="grok", xai_api_key="x")
     result = Heavy.from_settings(fake)
     assert result is None
 

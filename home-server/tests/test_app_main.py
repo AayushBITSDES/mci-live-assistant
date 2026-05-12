@@ -36,6 +36,12 @@ def _isolated_settings(tmp_path: Path, *, fresh_start: bool = True) -> Settings:
     touches the real ./storage tree."""
     return Settings(
         fresh_start=fresh_start,
+        active_llm_provider="grok",
+        xai_api_key="",
+        google_api_key="",
+        sarvam_api_key="",
+        asr_provider="off",
+        tts_provider="browser",
         storage_root=tmp_path / "storage",
         events_dir=tmp_path / "storage" / "events",
         faces_dir=tmp_path / "storage" / "faces",
@@ -395,6 +401,7 @@ def test_ws_live_mode_audio_chunk_dispatches_mark_done(
             }))
             voice_data = ws.receive_text()
             voice_payload = json.loads(voice_data)
+            reply_payload = json.loads(ws.receive_text())
 
             # Round-trip a ping so we know the audio message has been
             # fully processed by the server's WS loop before we inspect state.
@@ -405,6 +412,8 @@ def test_ws_live_mode_audio_chunk_dispatches_mark_done(
         assert voice_payload["type"] == "voice_command"
         assert voice_payload["transcript"] == "I already took my pill"
         assert voice_payload["tool"] == "markDone"
+        assert reply_payload["type"] == "assistant_reply"
+        assert "marked done" in reply_payload["sentence"]
         assert payload["type"] == "ack" and payload["message"] == "pong"
         # The LLM was asked about the transcript
         assert llm.voice_calls == ["I already took my pill"]
@@ -631,7 +640,7 @@ def test_demo_operator_medicine_event_returns_named_nudge(
     assert "vitamin" in body["messages"][0]["sentence"].lower()
 
 
-def test_demo_stove_third_ignore_pushes_caregiver_alert_and_acknowledges(
+def test_demo_stove_second_ignore_pushes_caregiver_alert_and_acknowledges(
     monkeypatch, tmp_path: Path
 ) -> None:
     test_settings = _isolated_settings(tmp_path, fresh_start=True)
@@ -644,8 +653,7 @@ def test_demo_stove_third_ignore_pushes_caregiver_alert_and_acknowledges(
             client.post("/demo/operator/event", json={"event": "visitor_name", "name": "Shanta"})
             client.post("/demo/operator/event", json={"event": "stove_on"})
             client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "later"})
-            client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "closed"})
-            response = client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "silent"})
+            response = client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "closed"})
 
             pushed = json.loads(caregiver.receive_text())
             alert_id = pushed["alert_id"]
@@ -655,7 +663,7 @@ def test_demo_stove_third_ignore_pushes_caregiver_alert_and_acknowledges(
     assert pushed["type"] == "caregiver_alert"
     assert pushed["risk_type"] == "stove_on"
     assert pushed["visitor_name"] == "Shanta"
-    assert pushed["ignored_count"] == 3
+    assert pushed["ignored_count"] == 2
     assert ack.status_code == 200
     assert ack.json()["type"] == "caregiver_ack"
 

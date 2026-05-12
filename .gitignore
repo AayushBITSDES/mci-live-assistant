@@ -49,7 +49,16 @@ logs/
 *.swo
 
 # --- Runtime data (JSONL audit trail, face embeddings, etc.) ---
-home-server/storage/
+home-server/storage/*
+!home-server/storage/reference/
+!home-server/storage/reference/README.md
+!home-server/storage/reference/medicine_bottle/
+!home-server/storage/reference/medicine_bottle/.gitkeep
+!home-server/storage/reference/stove/
+!home-server/storage/reference/stove/.gitkeep
+!home-server/storage/reference/faces/
+!home-server/storage/reference/faces/Anya/
+!home-server/storage/reference/faces/Anya/.gitkeep
 
 # --- Local ML model weights ---
 *.pt

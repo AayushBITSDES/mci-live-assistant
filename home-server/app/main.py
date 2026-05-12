@@ -52,6 +52,7 @@ from app.pipeline import Heavy, Session
 from context.event_log import append_event
 from context.manager import ContextManager
 from context.replay import replay_recent
+from demo.observations import ObservationAdapter
 from demo.orchestrator import DemoOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,12 @@ async def lifespan(app: FastAPI):
         replayed = replay_recent(cm, lookback_hours=settings.replay_lookback_hours)
         logger.info("Replayed %d recent events into ContextManager", replayed)
     app.state.context_manager = cm
-    app.state.demo_orchestrator = DemoOrchestrator()
+    app.state.demo_orchestrator = DemoOrchestrator(
+        medicine_reminder_delay_seconds=settings.medicine_reminder_delay_seconds,
+        stove_first_reminder_seconds=settings.stove_first_reminder_seconds,
+        stove_escalation_seconds=settings.stove_escalation_seconds,
+    )
+    app.state.observation_adapter = ObservationAdapter()
     app.state.edge_sockets = set()
     app.state.caregiver_sockets = set()
 
@@ -250,7 +256,13 @@ def create_app() -> FastAPI:
                         # Live pipeline. Vision + gate run synchronously here;
                         # the LLM + TTS happen on the session's worker task
                         # and arrive via the on_nudge callback later.
-                        await session.handle_frame(parsed)
+                        observation = await session.handle_frame(parsed)
+                        if observation is not None:
+                            demo: DemoOrchestrator = ws.app.state.demo_orchestrator
+                            adapter: ObservationAdapter = ws.app.state.observation_adapter
+                            messages = adapter.apply(demo, observation)
+                            await _broadcast_caregiver_messages(ws.app, messages)
+                            await _broadcast_edge_messages(ws.app, messages)
                     else:
                         nudge = await _maybe_emit_debug_nudge(frame_counter)
                         if nudge is not None:
@@ -277,6 +289,17 @@ def create_app() -> FastAPI:
                             reply = _assistant_reply_from_command(command)
                             if reply is not None:
                                 await ws.send_text(reply.model_dump_json())
+                            demo_messages: list[dict[str, Any]] = []
+                            demo: DemoOrchestrator = ws.app.state.demo_orchestrator
+                            if command.tool is not None:
+                                demo_messages = demo.handle_voice_tool(
+                                    command.tool.name,
+                                    command.tool.arguments or {},
+                                )
+                            await _broadcast_caregiver_messages(ws.app, demo_messages)
+                            for message in _edge_messages(demo_messages):
+                                await ws.send_text(json.dumps(message))
+                            await _broadcast_edge_messages(ws.app, demo_messages, exclude=ws)
 
                 elif msg_type == "status":
                     logger.info(
@@ -454,10 +477,7 @@ async def _broadcast_edge_messages(
     if not sockets:
         return
 
-    edge_messages = [
-        m for m in messages
-        if m.get("type") in {"nudge", "assistant_reply", "edge_control"}
-    ]
+    edge_messages = _edge_messages(messages)
     if not edge_messages:
         return
 
@@ -473,6 +493,13 @@ async def _broadcast_edge_messages(
                 break
     for ws in stale:
         sockets.discard(ws)
+
+
+def _edge_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        m for m in messages
+        if m.get("type") in {"nudge", "assistant_reply", "edge_control"}
+    ]
 
 
 app = create_app()

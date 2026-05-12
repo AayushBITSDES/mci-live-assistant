@@ -9,6 +9,7 @@ websockets
 starlette
 
 # --- Vision: Object detection ---
+opencv-python-headless       # M2-friendly exhibition prop/face matching
 ultralytics>=8.3.0          # YOLOv10s
 
 # --- Vision: Face recognition (server-side, GPU-aware) ---
