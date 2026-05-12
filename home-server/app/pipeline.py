@@ -72,6 +72,8 @@ _SAFETY_KINDS = {
 # no correctness risk, just lost speed. Source call sites are noted
 # inline so future renames stay coordinated.
 PRESYNTH_REPLIES: tuple[str, ...] = (
+    # app.main onboarding flow (first greeting on connect)
+    "Hello, I'm Shanta. What should I call you?",
     # pipeline._local_voice_command (hello/presence)
     "I am here and listening.",
     # demo.orchestrator.DemoOrchestrator.handle_voice_tool (markDone)
@@ -80,6 +82,9 @@ PRESYNTH_REPLIES: tuple[str, ...] = (
     # demo.orchestrator.DemoOrchestrator.resolve_stove
     "Thanks, I can see you are checking the stove.",
 )
+
+
+ONBOARDING_GREETING = "Hello, I'm Shanta. What should I call you?"
 
 
 NudgeCallback = Callable[[NudgeMessage], Awaitable[None]]
@@ -458,20 +463,22 @@ class Session:
 
     # --- Audio path --------------------------------------------------------
 
-    async def handle_audio(self, audio: AudioChunkMessage) -> Optional[tuple[str, CommandResult]]:
-        """Transcribe an audio chunk and dispatch any resulting tool call.
+    async def transcribe_audio(self, audio: AudioChunkMessage) -> Optional[str]:
+        """ASR-only path: returns a cleaned transcript or None.
 
-        Independent of the frame path: an audio chunk is its own
-        utterance; we transcribe, ask the LLM to map it to a tool, then
-        apply the tool's state changes. Failures at any stage are logged
-        and the next chunk is processed normally.
+        Shared by ``handle_audio`` (regular command flow) and the WS
+        layer's onboarding flow, which needs the raw transcript without
+        also running it through the LLM/tool dispatch.
+
+        Returns ``None`` for any reason the chunk shouldn't be processed:
+        session closed, no ASR adapter, bad/empty audio, empty
+        transcript, or single-word filler ("okay", "uh", ...). All
+        failures are logged.
         """
         if self._closed:
             return None
         whisper = self._heavy.whisper
         if whisper is None:
-            # Voice commands are not available in this build (no Whisper).
-            # Acknowledge silently so the protocol stays clean.
             return None
 
         try:
@@ -496,16 +503,25 @@ class Session:
 
         transcript = (transcript or "").strip()
         if not transcript:
-            # VAD inside Whisper filtered the chunk down to silence.
             return None
-
         logger.info("Session: audio transcript=%r", transcript)
         if _is_filler_transcript(transcript):
-            # End-to-end ASR (Sarvam/Whisper) hallucinates short filler
-            # words on near-silence. Drop them before they cost an LLM
-            # call and a spurious response.
             logger.info("Session: dropping filler/noise transcript")
             return None
+        return transcript
+
+    async def handle_audio(self, audio: AudioChunkMessage) -> Optional[tuple[str, CommandResult]]:
+        """Transcribe an audio chunk and dispatch any resulting tool call.
+
+        Independent of the frame path: an audio chunk is its own
+        utterance; we transcribe, ask the LLM to map it to a tool, then
+        apply the tool's state changes. Failures at any stage are logged
+        and the next chunk is processed normally.
+        """
+        transcript = await self.transcribe_audio(audio)
+        if transcript is None:
+            return None
+
         command = _local_voice_command(transcript)
         if command is None:
             llm_started = time.perf_counter()

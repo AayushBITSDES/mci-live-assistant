@@ -269,6 +269,7 @@ def test_ws_live_mode_emits_real_nudge_when_gate_fires(
         # Lifespan ran; override Heavy with our fake AFTER startup so
         # graceful degradation can't accidentally null it out.
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=live-test") as ws:
             base = datetime.now(timezone.utc)
             # Open kitchen activity
@@ -307,6 +308,7 @@ def test_ws_live_mode_quiet_frames_yield_no_nudges(monkeypatch, tmp_path: Path) 
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=quiet-test") as ws:
             base = datetime.now(timezone.utc)
             for i in range(10):
@@ -397,6 +399,7 @@ def test_ws_live_mode_audio_chunk_dispatches_mark_done(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=audio-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",
@@ -457,6 +460,7 @@ def test_ws_live_mode_audio_toggle_camera_sends_edge_control(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=privacy-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",
@@ -495,6 +499,7 @@ def test_ws_live_mode_audio_toggle_audio_sends_edge_control(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=audio-control-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",
@@ -543,6 +548,7 @@ def test_ws_live_mode_audio_raw_text_falls_back_to_assistant_reply(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=raw-reply-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",
@@ -584,6 +590,7 @@ def test_ws_live_mode_audio_assistant_reply_sends_reply_message(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=reply-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",

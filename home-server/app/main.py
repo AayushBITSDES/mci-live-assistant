@@ -25,11 +25,12 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,7 +50,7 @@ from app.models import (
     StatusMessage,
     VoiceCommandMessage,
 )
-from app.pipeline import Heavy, Session
+from app.pipeline import Heavy, ONBOARDING_GREETING, Session
 from context.event_log import append_event
 from context.manager import ContextManager
 from context.replay import replay_recent
@@ -255,6 +256,32 @@ def create_app() -> FastAPI:
             )
             await session.start()
 
+        # Voice-driven onboarding: when no visitor name is set yet, greet
+        # the user and listen for the next audio chunk as their name.
+        # If a name was typed into the operator/edge field first (the
+        # http POST runs before this WS opens), skip and go straight to
+        # normal command mode.
+        demo_state: DemoOrchestrator = ws.app.state.demo_orchestrator
+        awaiting_name = (
+            session is not None
+            and not (demo_state.state.visitor_name or "").strip()
+        )
+        if awaiting_name:
+            greeting_audio = await _maybe_synthesize_reply(ws.app, ONBOARDING_GREETING)
+            greeting = AssistantReplyMessage(
+                sentence=ONBOARDING_GREETING,
+                audio_b64=greeting_audio,
+            )
+            await ws.send_text(greeting.model_dump_json())
+            # Auto-open the mic so the user can just answer without
+            # hunting for a button. The edge client treats this like any
+            # other voice-tool control and prompts for permission once.
+            await ws.send_text(EdgeControlMessage(
+                target="mic",
+                action="on",
+                reason="onboarding",
+            ).model_dump_json())
+
         frame_counter = 0
 
         try:
@@ -286,7 +313,44 @@ def create_app() -> FastAPI:
                     # voice-command tool dispatch. In debug-stub mode (no
                     # Heavy on dev box) we just parse-and-discard so the
                     # protocol stays clean.
-                    if session is not None:
+                    if session is not None and awaiting_name:
+                        transcript = await session.transcribe_audio(parsed)
+                        if transcript:
+                            name = _extract_name_from_transcript(transcript)
+                            # Echo what we heard so the user sees we got it.
+                            await ws.send_text(VoiceCommandMessage(
+                                transcript=transcript,
+                                tool=None,
+                                raw=name or "",
+                                provider="onboarding",
+                            ).model_dump_json())
+                            if name:
+                                demo_state.set_visitor_name(name)
+                                awaiting_name = False
+                                await asyncio.to_thread(
+                                    append_event,
+                                    {
+                                        "event_type": "visitor_name_set",
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                        "name": name,
+                                        "source": "voice_onboarding",
+                                    },
+                                )
+                                confirmation = f"Nice to meet you, {name}."
+                                conf_audio = await _maybe_synthesize_reply(ws.app, confirmation)
+                                await ws.send_text(AssistantReplyMessage(
+                                    sentence=confirmation,
+                                    audio_b64=conf_audio,
+                                ).model_dump_json())
+                            else:
+                                # Couldn't parse a name; re-ask once.
+                                retry = "Sorry, I didn't catch that. What should I call you?"
+                                retry_audio = await _maybe_synthesize_reply(ws.app, retry)
+                                await ws.send_text(AssistantReplyMessage(
+                                    sentence=retry,
+                                    audio_b64=retry_audio,
+                                ).model_dump_json())
+                    elif session is not None:
                         result = await session.handle_audio(parsed)
                         if result is not None:
                             transcript, command = result
@@ -453,6 +517,51 @@ async def _synthesize_sentence(heavy: Heavy, sentence: str) -> bytes | None:
         logger.exception("TTS synthesis failed for %r", sentence[:60])
         return None
     return wav_bytes or None
+
+
+_NAME_PREFIXES: tuple[str, ...] = (
+    "hi my name is ",
+    "hello my name is ",
+    "hi i'm ",
+    "hello i'm ",
+    "hi i am ",
+    "hello i am ",
+    "my name is ",
+    "i'm ",
+    "i am ",
+    "it's ",
+    "call me ",
+    "this is ",
+    "the name's ",
+    "name's ",
+)
+
+_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z\s'\-]{0,29}$")
+
+
+def _extract_name_from_transcript(transcript: str) -> Optional[str]:
+    """Pull a likely name out of an onboarding ASR transcript.
+
+    Strips common conversational lead-ins ("my name is...", "I'm...") and
+    returns the first 1-2 leftover words if they look like a name. Returns
+    ``None`` when the transcript doesn't shape like a name at all, so the
+    caller can re-prompt instead of saving "what".
+    """
+    text = transcript.strip().rstrip(".!?,;:")
+    if not text:
+        return None
+    lower = text.lower()
+    for prefix in _NAME_PREFIXES:  # already ordered longest-first
+        if lower.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    words = text.split()
+    if not words or len(words) > 4:
+        return None
+    candidate = " ".join(words[:2])
+    if not _NAME_PATTERN.match(candidate):
+        return None
+    return candidate.title()
 
 
 async def _enrich_messages_with_audio(
