@@ -13,9 +13,13 @@ from __future__ import annotations
 import io
 import logging
 import wave
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# Piper voice files (.onnx + .onnx.json) live here unless voices_dir is set.
+_HOME_SERVER_ROOT = Path(__file__).resolve().parent.parent
 
 
 class PiperSynthesizer:
@@ -42,9 +46,17 @@ class PiperSynthesizer:
     @staticmethod
     def _load_voice(voice_name: str, voices_dir: Optional[str]) -> Any:
         from piper import PiperVoice  # type: ignore
-        logger.info("Loading Piper voice: %s", voice_name)
-        # Piper expects a path to the .onnx file or a model name; both work.
-        return PiperVoice.load(voice_name, model_path=voices_dir)
+
+        base = Path(voices_dir) if voices_dir else _HOME_SERVER_ROOT / "storage" / "piper_voices"
+        onnx = base / f"{voice_name}.onnx"
+        if not onnx.is_file():
+            raise FileNotFoundError(
+                f"Piper voice not found: {onnx} (expected {onnx} and {onnx}.json). "
+                "Download matching files from rhasspy/piper-voices and place them in "
+                f"{base.resolve()}/"
+            )
+        logger.info("Loading Piper voice: %s (%s)", voice_name, onnx)
+        return PiperVoice.load(str(onnx))
 
     def synthesize(self, text: str) -> bytes:
         """Render `text` to a WAV byte string ready for playback.
@@ -58,7 +70,12 @@ class PiperSynthesizer:
 
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wav:
-            self._voice.synthesize(text, wav)
+            # piper >= 1.2: WAV writer API; older test fakes may only implement synthesize().
+            synth_wav = getattr(self._voice, "synthesize_wav", None)
+            if callable(synth_wav):
+                synth_wav(text, wav)
+            else:
+                self._voice.synthesize(text, wav)
         return buf.getvalue()
 
 

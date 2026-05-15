@@ -45,6 +45,9 @@ class GrokClient(LLMClient):
         persona: str = "shanta",
     ) -> NudgeResult:
         user_prompt = build_nudge_prompt(context_summary, persona)
+        # Grok-4.3 is a reasoning model; "low" effort skips the heavy
+        # think-step. Sent via extra_body so older models that ignore the
+        # param still work.
         response = await self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -62,6 +65,7 @@ class GrokClient(LLMClient):
             ],
             max_tokens=80,
             temperature=0.4,
+            extra_body={"reasoning_effort": "none"},
         )
         raw = (response.choices[0].message.content or "").strip()
         return self._parse_nudge_response(raw)
@@ -83,10 +87,13 @@ class GrokClient(LLMClient):
             tool_choice="auto",
             max_tokens=120,
             temperature=0.0,
+            extra_body={"reasoning_effort": "none"},
         )
         choice = response.choices[0]
         raw = (choice.message.content or "").strip()
         tool = self._extract_tool_call(choice.message)
+        if tool is None and raw:
+            tool = self._fallback_from_text(raw, transcript)
         return CommandResult(tool=tool, raw_text=raw, provider=self.provider_name)
 
     # --- Parsing helpers --------------------------------------------------
@@ -122,3 +129,77 @@ class GrokClient(LLMClient):
         except json.JSONDecodeError:
             args = {}
         return ToolCall(name=first.function.name, arguments=args)
+
+    # The exact set of tools the server knows how to dispatch. Anything
+    # else extracted from a fallback text parse is a hallucination — we
+    # refuse to forge a call rather than dispatch a bogus tool. Source
+    # of truth: ``app.pipeline.Session._dispatch_tool``.
+    _KNOWN_TOOLS: frozenset[str] = frozenset({
+        "markDone",
+        "dismissTemporarily",
+        "flagWrong",
+        "closeForever",
+        "toggleMic",
+        "toggleCamera",
+        "toggleAudio",
+        "assistantReply",
+    })
+
+    @classmethod
+    def _canonical_tool_name(cls, candidate: str) -> Optional[str]:
+        """Return the canonical tool name for ``candidate`` or None."""
+        if not candidate:
+            return None
+        if candidate in cls._KNOWN_TOOLS:
+            return candidate
+        lowered = candidate.lower()
+        for known in cls._KNOWN_TOOLS:
+            if known.lower() == lowered:
+                return known
+        return None
+
+    @classmethod
+    def _fallback_from_text(cls, raw: str, transcript: str) -> Optional[ToolCall]:
+        import re
+        # XML-style
+        if "<tool_call" in raw or "<function_call" in raw:
+            m = re.search(r'<(?:tool_call|function_call)[^>]*name=["\']([^"\']+)["\']', raw)
+            if not m:
+                m = re.search(r'name=["\']([^"\']+)["\'][^>]*>', raw)
+            if m:
+                name = cls._canonical_tool_name(m.group(1))
+                if name is not None:
+                    args = {}
+                    for p in re.finditer(r'<parameter name=["\']([^"\']+)["\']>(.*?)</parameter>', raw, re.DOTALL):
+                        args[p.group(1)] = p.group(2).strip()
+                    return ToolCall(name=name, arguments=args)
+
+        # Plain-text style: "call assistantReply with sentence is You were..."
+        # Only honour the match if the captured word is a real tool —
+        # otherwise we'd happily forge calls to "to" / "you" / "for".
+        m = re.search(r'(?:call|tool)\s+(\w+)', raw, re.IGNORECASE)
+        if m:
+            name = cls._canonical_tool_name(m.group(1))
+            if name is not None:
+                args = {}
+                for p in re.finditer(r'(\w+)\s+is\s+([^,\n]+)', raw):
+                    args[p.group(1)] = p.group(2).strip()
+                return ToolCall(name=name, arguments=args)
+
+        text = (raw or "").lower() + " " + (transcript or "").lower()
+        if any(k in text for k in ("wrong", "not right", "incorrect", "no")):
+            reason = transcript or raw
+            return ToolCall(name="flagWrong", arguments={"reason": reason})
+        if any(k in text for k in ("never", "stop reminding", "don't remind", "no more")):
+            category = "stove_reminder" if "stove" in text else "medicine_reminder"
+            return ToolCall(name="closeForever", arguments={"category": category})
+        if any(k in text for k in ("remind me later", "not now", "in a bit")):
+            return ToolCall(name="dismissTemporarily", arguments={})
+
+        # Pure conversational text from the LLM: surface it as a spoken
+        # assistant reply rather than dropping it on the floor. This is
+        # what makes the assistant feel like it can actually chat.
+        cleaned = (raw or "").strip()
+        if cleaned and len(cleaned) <= 280:
+            return ToolCall(name="assistantReply", arguments={"sentence": cleaned})
+        return None

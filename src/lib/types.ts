@@ -12,6 +12,7 @@ export interface NudgeMessage {
   priority: NudgePriority;
   audio_b64?: string | null;
   auto_dismiss_seconds: number;
+  scenario?: string;
 }
 
 export interface AckMessage {
@@ -20,7 +21,34 @@ export interface AckMessage {
   server_time: string;
 }
 
-export type ServerMessage = NudgeMessage | AckMessage;
+export interface VoiceCommandMessage {
+  type: "voice_command";
+  transcript: string;
+  tool?: string | null;
+  raw: string;
+  provider: string;
+}
+
+export interface AssistantReplyMessage {
+  type: "assistant_reply";
+  sentence: string;
+  audio_b64?: string | null;
+  ts?: number;
+}
+
+export interface EdgeControlMessage {
+  type: "edge_control";
+  target: "mic" | "camera" | "audio";
+  action: "on" | "off";
+  reason?: string;
+}
+
+export type ServerMessage =
+  | NudgeMessage
+  | AckMessage
+  | VoiceCommandMessage
+  | AssistantReplyMessage
+  | EdgeControlMessage;
 
 export interface FrameMessage {
   type: "frame";
@@ -39,4 +67,30 @@ export interface StatusMessage {
   camera_active: boolean;
 }
 
-export type ClientMessage = FrameMessage | StatusMessage | { type: "ping" };
+export interface AudioChunkMessage {
+  type: "audio";
+  device_id: string;
+  timestamp: string;
+  audio_b64: string;        // base64-encoded MediaRecorder output
+  sample_rate: number;      // browser default is 48000 for webm/opus
+  duration_ms: number;
+  // The actual MIME the recorder produced, e.g. "audio/webm;codecs=opus"
+  // or "audio/mp4". The server forwards this to the ASR adapter so the
+  // upload Content-Type matches the bytes; omitted only if unknown.
+  mime_type?: string;
+}
+
+export interface DemoActionMessage {
+  type: "demo_action";
+  device_id: string;
+  action: "nudge_closed" | "nudge_auto_dismiss";
+  nudge_id?: string;
+  scenario?: string;
+}
+
+export type ClientMessage =
+  | FrameMessage
+  | StatusMessage
+  | AudioChunkMessage
+  | DemoActionMessage
+  | { type: "ping" };

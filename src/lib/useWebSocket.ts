@@ -1,11 +1,22 @@
 // Custom hook: connect/disconnect, send messages, expose latest nudge.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ClientMessage, NudgeMessage, ServerMessage, SurfaceMode } from "./types";
+import type {
+  ClientMessage,
+  AssistantReplyMessage,
+  EdgeControlMessage,
+  NudgeMessage,
+  ServerMessage,
+  SurfaceMode,
+  VoiceCommandMessage,
+} from "./types";
 
 export interface ConnectionState {
   status: "disconnected" | "connecting" | "connected" | "error";
   lastNudge: NudgeMessage | null;
+  lastVoiceCommand: VoiceCommandMessage | null;
+  lastAssistantReply: AssistantReplyMessage | null;
+  lastControl: EdgeControlMessage | null;
   framesSent: number;
 }
 
@@ -21,6 +32,9 @@ export function useWebSocket(): WebSocketHandle {
   const [state, setState] = useState<ConnectionState>({
     status: "disconnected",
     lastNudge: null,
+    lastVoiceCommand: null,
+    lastAssistantReply: null,
+    lastControl: null,
     framesSent: 0,
   });
 
@@ -56,7 +70,14 @@ export function useWebSocket(): WebSocketHandle {
 
     ws.addEventListener("close", () => {
       if (wsRef.current !== ws) return;
-      setState((s) => ({ ...s, status: "disconnected" }));
+      setState({
+        status: "disconnected",
+        lastNudge: null,
+        lastVoiceCommand: null,
+        lastAssistantReply: null,
+        lastControl: null,
+        framesSent: 0,
+      });
       wsRef.current = null;
     });
 
@@ -71,6 +92,22 @@ export function useWebSocket(): WebSocketHandle {
         const payload = JSON.parse(ev.data) as ServerMessage;
         if (payload.type === "nudge") {
           setState((s) => ({ ...s, lastNudge: payload }));
+        } else if (payload.type === "voice_command") {
+          const clearsCurrentNudge = [
+            "markDone",
+            "dismissTemporarily",
+            "flagWrong",
+            "closeForever",
+          ].includes(payload.tool ?? "");
+          setState((s) => ({
+            ...s,
+            lastVoiceCommand: payload,
+            lastNudge: clearsCurrentNudge ? null : s.lastNudge,
+          }));
+        } else if (payload.type === "assistant_reply") {
+          setState((s) => ({ ...s, lastAssistantReply: payload }));
+        } else if (payload.type === "edge_control") {
+          setState((s) => ({ ...s, lastControl: payload }));
         }
       } catch {
         // ignore malformed messages

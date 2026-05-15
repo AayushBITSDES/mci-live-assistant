@@ -26,7 +26,7 @@ button, input, select { font: inherit; }
 
 .app {
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto auto 1fr auto;
   gap: 12px;
   height: 100vh;
   padding: 16px;
@@ -93,6 +93,42 @@ button, input, select { font: inherit; }
 .status-pill.live { background: #1e3a1e; color: #aaffaa; border-color: #2a5a2a; }
 .status-pill.fail { background: #3a1e1e; color: #ffaaaa; border-color: #5a2a2a; }
 
+/* --- Onboarding ------------------------------------------------------- */
+
+.onboarding-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: #15161a;
+  border: 1px solid #2a2c30;
+  border-radius: 10px;
+}
+
+.onboarding-strip label {
+  font-size: 13px;
+  opacity: 0.78;
+}
+
+.onboarding-strip input {
+  flex: 1;
+  min-width: 180px;
+  padding: 8px 10px;
+  color: inherit;
+  background: #1c1d20;
+  border: 1px solid #2a2c30;
+  border-radius: 8px;
+}
+
+.onboarding-strip button {
+  padding: 8px 12px;
+  color: inherit;
+  background: #2a2c30;
+  border: 1px solid #3a3c40;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
 /* --- Surface switcher ------------------------------------------------- */
 
 .surface-switcher {
@@ -154,17 +190,47 @@ button, input, select { font: inherit; }
   gap: 8px;
 }
 
-.audio-toggle {
+.audio-toggle,
+.mic-toggle,
+.media-pill {
   padding: 6px 12px;
   background: rgba(0, 0, 0, 0.5);
   color: inherit;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 999px;
-  cursor: pointer;
   font-size: 12px;
 }
 
-.audio-toggle:hover { background: rgba(0, 0, 0, 0.7); }
+.audio-toggle,
+.mic-toggle {
+  cursor: pointer;
+}
+
+.audio-toggle:hover,
+.mic-toggle:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.audio-toggle.off,
+.mic-toggle.off,
+.media-pill.off {
+  background: rgba(95, 26, 26, 0.82);
+  border-color: rgba(255, 130, 130, 0.45);
+  color: #ffd6d6;
+}
+
+.audio-toggle.on,
+.mic-toggle.on,
+.media-pill.on {
+  background: rgba(20, 74, 42, 0.7);
+  border-color: rgba(92, 230, 145, 0.35);
+  color: #d9ffe7;
+}
+
+.mic-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
 /* --- Privacy dot ------------------------------------------------------ */
 
@@ -221,6 +287,66 @@ button, input, select { font: inherit; }
 
 .nudge-icon { font-size: 18px; }
 .nudge-text { font-size: 16px; line-height: 1.35; flex: 1; }
+
+.nudge-close {
+  padding: 6px 10px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.transcript-bubble {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  max-width: min(560px, calc(100% - 32px));
+  padding: 8px 14px;
+  background: rgba(13, 14, 16, 0.78);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
+  animation: nudge-in 240ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  pointer-events: none;
+}
+
+.transcript-label {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+.transcript-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: #f4f1ea;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.assistant-reply {
+  position: absolute;
+  left: 24px;
+  bottom: 24px;
+  width: min(420px, calc(100% - 48px));
+  padding: 12px 14px;
+  color: #e9f5ff;
+  background: rgba(13, 24, 34, 0.86);
+  border: 1px solid rgba(126, 203, 255, 0.28);
+  border-radius: 12px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+  font-size: 15px;
+  line-height: 1.35;
+}
 
 @keyframes nudge-in {
   from { opacity: 0; transform: translateY(12px); }

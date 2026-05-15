@@ -1,9 +1,13 @@
 """Streamlit dashboard entrypoint.
 
-Run with:
-    streamlit run dashboard/app.py --server.port 8501
+Run with (from ``home-server/``):
 
-Pages live in `dashboard/pages/` and are auto-discovered by Streamlit
+    streamlit run dashboard/streamlit_app.py --server.port 8501
+
+Do not name this file ``app.py`` — Streamlit loads it as top-level module
+``app``, which shadows the real ``app`` package (``app.config``, etc.).
+
+Pages live in ``dashboard/pages/`` and are auto-discovered by Streamlit
 (numeric prefix controls sidebar order).
 """
 from __future__ import annotations

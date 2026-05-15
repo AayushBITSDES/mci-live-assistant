@@ -6,12 +6,13 @@ import type { NudgeMessage } from "../lib/types";
 
 export interface NudgeOverlayProps {
   nudge: NudgeMessage | null;
-  onDismiss: () => void;
+  onDismiss: (action: "nudge_closed" | "nudge_auto_dismiss") => void;
 }
 
 export function NudgeOverlay({ nudge, onDismiss }: NudgeOverlayProps) {
   const [visible, setVisible] = useState(false);
   const onDismissRef = useRef(onDismiss);
+  const timeoutRef = useRef<number | null>(null);
   onDismissRef.current = onDismiss;
 
   const nudgeId = nudge?.nudge_id;
@@ -24,12 +25,18 @@ export function NudgeOverlay({ nudge, onDismiss }: NudgeOverlayProps) {
     }
     setVisible(true);
 
-    const timeout = window.setTimeout(() => {
+    timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = null;
       setVisible(false);
-      onDismissRef.current();
+      onDismissRef.current("nudge_auto_dismiss");
     }, dismissSec * 1000);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+    };
   }, [nudgeId, dismissSec]);
 
   if (!nudge || !visible) return null;
@@ -41,6 +48,21 @@ export function NudgeOverlay({ nudge, onDismiss }: NudgeOverlayProps) {
       <div className="nudge-card" style={{ borderLeftColor: accent }}>
         <span className="nudge-icon">🪞</span>
         <span className="nudge-text">{nudge.sentence}</span>
+        <button
+          className="nudge-close"
+          onClick={() => {
+            if (timeoutRef.current !== null) {
+              window.clearTimeout(timeoutRef.current);
+              timeoutRef.current = null;
+            }
+            setVisible(false);
+            onDismissRef.current("nudge_closed");
+          }}
+          type="button"
+          aria-label="Close nudge"
+        >
+          Close
+        </button>
       </div>
     </div>
   );

@@ -9,6 +9,7 @@ import { PrivacyDot } from "./components/PrivacyDot";
 import { SurfaceSwitcher } from "./components/SurfaceSwitcher";
 import { playChimeAndAudioB64, playChimeAndSpeak } from "./lib/audio";
 import { captureFrameJpeg, startCamera, stopCamera } from "./lib/camera";
+import { startMicCapture, type MicCaptureHandle } from "./lib/mic";
 import type { SurfaceMode } from "./lib/types";
 import { useWebSocket } from "./lib/useWebSocket";
 
@@ -36,19 +37,38 @@ const DEVICE_ID = (() => {
 function App() {
   const [surface, setSurface] = useState<SurfaceMode>(() => detectSurface());
   const [wsUrl, setWsUrl] = useState(DEFAULT_WS_URL);
+  const [visitorName, setVisitorName] = useState(() => {
+    try {
+      return window.localStorage.getItem("mci_visitor_name") ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraEnabled, setCameraEnabled] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(true);
+  const [micActive, setMicActive] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
+  const [transcriptBubble, setTranscriptBubble] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastSpokenIdRef = useRef<string | null>(null);
+  const micHandleRef = useRef<MicCaptureHandle | null>(null);
 
   const { state, connect, disconnect, send } = useWebSocket();
   const isConnected = state.status === "connected";
 
+  // The mic capture loop fires `onChunk` from inside a setTimeout
+  // callback that closes over its props at start time. Park `send` in a
+  // ref so the latest closure is always reachable without rerunning the
+  // start-mic effect on every render.
+  const sendRef = useRef(send);
+  sendRef.current = send;
+
   // Start/stop camera in lockstep with the connection.
   useEffect(() => {
-    if (!isConnected) {
+    if (!isConnected || !cameraEnabled) {
       stopCamera(streamRef.current, videoRef.current);
       streamRef.current = null;
       setCameraActive(false);
@@ -74,7 +94,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [isConnected]);
+  }, [isConnected, cameraEnabled]);
 
   // Frame loop — captures a JPEG every 1/FPS seconds while connected.
   useEffect(() => {
@@ -109,18 +129,144 @@ function App() {
     }
   }, [state.lastNudge, audioEnabled]);
 
+  // Mirror the latest transcribed phrase into a transient bubble so the
+  // user can see what the server heard — useful when commands seem to
+  // misfire. Each new transcript resets the auto-clear timer.
+  useEffect(() => {
+    const cmd = state.lastVoiceCommand;
+    if (!cmd || !cmd.transcript) return;
+    setTranscriptBubble(cmd.transcript);
+    const timer = window.setTimeout(() => setTranscriptBubble(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [state.lastVoiceCommand]);
+
+  // Speak natural assistant replies (voice conversation / face cues).
+  // Prefer server-rendered Sarvam audio over the browser's robotic
+  // speechSynthesis; fall back only when audio_b64 is missing.
+  useEffect(() => {
+    if (!audioEnabled || !state.lastAssistantReply) return;
+    if (state.lastAssistantReply.audio_b64) {
+      playChimeAndAudioB64(state.lastAssistantReply.audio_b64);
+    } else {
+      playChimeAndSpeak(state.lastAssistantReply.sentence);
+    }
+  }, [state.lastAssistantReply, audioEnabled]);
+
+  // Backend voice tools request actual media toggles on the browser edge.
+  useEffect(() => {
+    const control = state.lastControl;
+    if (!control) return;
+    const enabled = control.action === "on";
+    if (control.target === "mic") {
+      setMicError(null);
+      setMicActive(enabled);
+    } else if (control.target === "camera") {
+      setCameraEnabled(enabled);
+    } else if (control.target === "audio") {
+      setAudioEnabled(enabled);
+    }
+  }, [state.lastControl]);
+
+  // Mic capture loop. When (connected && micActive), start rolling
+  // utterance capture; each completed ~3-second blob is sent as an
+  // AudioChunkMessage. Disconnect or toggle-off tears it down cleanly.
+  useEffect(() => {
+    if (!isConnected || !micActive) {
+      const existing = micHandleRef.current;
+      if (existing) {
+        existing.stop();
+        micHandleRef.current = null;
+      }
+      return;
+    }
+
+    let cancelled = false;
+    let handleSampleRate = 16000;
+
+    startMicCapture(
+      (audioB64, durationMs, mimeType) => {
+        // Identity guard: if a stale capture finishes after toggle-off,
+        // ignore its trailing chunk so we don't post stale audio.
+        if (cancelled) return;
+        sendRef.current({
+          type: "audio",
+          device_id: DEVICE_ID,
+          timestamp: new Date().toISOString(),
+          audio_b64: audioB64,
+          sample_rate: handleSampleRate,
+          duration_ms: Math.round(durationMs),
+          mime_type: mimeType || undefined,
+        });
+      },
+      { chunkMs: 5000, minMs: 600 },
+    )
+      .then((handle) => {
+        if (cancelled) {
+          handle.stop();
+          return;
+        }
+        handleSampleRate = handle.sampleRate;
+        micHandleRef.current = handle;
+        setMicError(null);
+      })
+      .catch((err: unknown) => {
+        const message =
+          err instanceof Error ? err.message : "Could not access microphone";
+        console.warn("[mic] startMicCapture failed:", err);
+        setMicError(message);
+        setMicActive(false);
+      });
+
+    return () => {
+      cancelled = true;
+      const existing = micHandleRef.current;
+      if (existing) {
+        existing.stop();
+        micHandleRef.current = null;
+      }
+    };
+  }, [isConnected, micActive]);
+
+  // Push a status update whenever mic/camera state actually changes so
+  // the server can audit-log toggles (and future client-controls can
+  // react to mic_active without polling).
+  useEffect(() => {
+    if (!isConnected) return;
+    sendRef.current({
+      type: "status",
+      device_id: DEVICE_ID,
+      mic_active: micActive,
+      camera_active: cameraActive,
+    });
+  }, [isConnected, micActive, cameraActive]);
+
   const handleConnect = useCallback(() => {
     connect(wsUrl, DEVICE_ID, surface);
-  }, [connect, wsUrl, surface]);
+    if (visitorName.trim()) {
+      try {
+        window.localStorage.setItem("mci_visitor_name", visitorName.trim());
+      } catch {
+        // ignore localStorage failures
+      }
+      void postDemoEvent(wsUrl, { event: "visitor_name", name: visitorName.trim() })
+        .catch((err) => console.warn("[demo] visitor_name failed:", err));
+    }
+  }, [connect, wsUrl, surface, visitorName]);
 
   const handleDisconnect = useCallback(() => {
     disconnect();
   }, [disconnect]);
 
-  const handleNudgeDismiss = useCallback(() => {
-    // Phase 9 leaves dismissal as a no-op; voice command handler lands
-    // when ASR is wired in (Phase 5 deployment).
-  }, []);
+  const handleNudgeDismiss = useCallback((action: "nudge_closed" | "nudge_auto_dismiss") => {
+    if (!state.lastNudge) return;
+    send({
+      type: "demo_action",
+      device_id: DEVICE_ID,
+      action,
+      nudge_id: state.lastNudge.nudge_id,
+      scenario: state.lastNudge.scenario,
+    });
+  }, [send, state.lastNudge]);
 
   const surfaceClass = useMemo(() => `app surface-${surface}`, [surface]);
 
@@ -143,6 +289,31 @@ function App() {
         onDisconnect={handleDisconnect}
       />
 
+      <form
+        className="onboarding-strip"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const cleaned = visitorName.trim();
+          if (!cleaned) return;
+          try {
+            window.localStorage.setItem("mci_visitor_name", cleaned);
+          } catch {
+            // ignore localStorage failures
+          }
+          void postDemoEvent(wsUrl, { event: "visitor_name", name: cleaned })
+            .catch((err) => console.warn("[demo] visitor_name failed:", err));
+        }}
+      >
+        <label htmlFor="visitor-name">Visitor name</label>
+        <input
+          id="visitor-name"
+          value={visitorName}
+          onChange={(event) => setVisitorName(event.target.value)}
+          placeholder="What should I call you?"
+        />
+        <button type="submit">Save</button>
+      </form>
+
       <main className="stage">
         <video
           ref={videoRef}
@@ -154,14 +325,49 @@ function App() {
 
         <div className="hud">
           <PrivacyDot active={cameraActive} />
+          <span className={`media-pill ${cameraEnabled ? "on" : "off"}`}>
+            camera {cameraEnabled ? "on" : "off"}
+          </span>
           <button
-            className="audio-toggle"
+            className={`audio-toggle ${audioEnabled ? "on" : "off"}`}
             onClick={() => setAudioEnabled((v) => !v)}
             type="button"
+            aria-pressed={audioEnabled}
           >
             {audioEnabled ? "🔊 audio on" : "🔇 audio off"}
           </button>
+          <button
+            className={`mic-toggle ${micActive ? "on" : "off"}`}
+            onClick={() => {
+              setMicError(null);
+              setMicActive((v) => !v);
+            }}
+            disabled={!isConnected}
+            title={
+              isConnected
+                ? "Toggle voice commands (mic streams 5-second utterances)"
+                : "Connect first"
+            }
+            type="button"
+            aria-pressed={micActive}
+          >
+            {micActive ? "🎙️ mic on" : "🎤 mic off"}
+          </button>
+          {micError && <span className="mic-error">{micError}</span>}
         </div>
+
+        {transcriptBubble && (
+          <div className="transcript-bubble" role="status" aria-live="polite">
+            <span className="transcript-label">you said</span>
+            <span className="transcript-text">{transcriptBubble}</span>
+          </div>
+        )}
+
+        {state.lastAssistantReply && (
+          <div className="assistant-reply" role="status" aria-live="polite">
+            {state.lastAssistantReply.sentence}
+          </div>
+        )}
 
         <NudgeOverlay nudge={state.lastNudge} onDismiss={handleNudgeDismiss} />
       </main>
@@ -181,6 +387,27 @@ function detectSurface(): SurfaceMode {
   if (ua.includes("oculus") || ua.includes("quest")) return "quest";
   if (ua.includes("mobile") || ua.includes("iphone") || ua.includes("android")) return "mobile";
   return "desktop";
+}
+
+function postDemoEvent(wsUrl: string, payload: Record<string, unknown>): Promise<void> {
+  const url = httpUrlFor(wsUrl, "/demo/operator/event");
+  return fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).then((response) => {
+    if (!response.ok) {
+      throw new Error(`Demo event failed: ${response.status}`);
+    }
+  });
+}
+
+function httpUrlFor(wsUrl: string, path: string): string {
+  const url = new URL(wsUrl);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.pathname = path;
+  url.search = "";
+  return url.toString();
 }
 
 export default App;

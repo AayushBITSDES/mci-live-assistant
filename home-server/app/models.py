@@ -30,9 +30,17 @@ class AudioChunkMessage(BaseModel):
     type: Literal["audio"] = "audio"
     device_id: str
     timestamp: datetime
-    audio_b64: str = Field(..., description="Base64 PCM/Opus chunk")
+    audio_b64: str = Field(..., description="Base64-encoded recording bytes")
     sample_rate: int = 16000
     duration_ms: int
+    mime_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Actual MediaRecorder MIME type, e.g. 'audio/webm;codecs=opus' "
+            "or 'audio/mp4'. Optional for backwards compatibility; when "
+            "absent the ASR adapter falls back to its default."
+        ),
+    )
 
 
 class StatusMessage(BaseModel):
@@ -41,6 +49,15 @@ class StatusMessage(BaseModel):
     device_id: str
     mic_active: bool
     camera_active: bool
+
+
+class DemoActionMessage(BaseModel):
+    """Edge UI feedback for exhibition nudges."""
+    type: Literal["demo_action"] = "demo_action"
+    device_id: str
+    action: Literal["nudge_closed", "nudge_auto_dismiss"]
+    nudge_id: Optional[str] = None
+    scenario: Optional[str] = None
 
 
 # --- Server -> Edge ---
@@ -68,3 +85,27 @@ class AckMessage(BaseModel):
     type: Literal["ack"] = "ack"
     message: str
     server_time: datetime
+
+
+class VoiceCommandMessage(BaseModel):
+    """Result of a spoken command so the edge can update UI immediately."""
+    type: Literal["voice_command"] = "voice_command"
+    transcript: str
+    tool: Optional[str] = None
+    raw: str = ""
+    provider: str
+
+
+class AssistantReplyMessage(BaseModel):
+    """A short spoken/text response for natural user conversation."""
+    type: Literal["assistant_reply"] = "assistant_reply"
+    sentence: str
+    audio_b64: Optional[str] = None
+
+
+class EdgeControlMessage(BaseModel):
+    """Backend request for the edge to toggle browser-owned media streams."""
+    type: Literal["edge_control"] = "edge_control"
+    target: Literal["mic", "camera", "audio"]
+    action: Literal["on", "off"]
+    reason: str = "voice_command"

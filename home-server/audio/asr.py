@@ -29,7 +29,7 @@ class WhisperTranscriber:
         *,
         language: str = "en",
         device: str = "auto",
-        compute_type: str = "auto",
+        compute_type: str = "int8",
         model: Optional[Any] = None,
     ) -> None:
         self._language = language
@@ -44,7 +44,12 @@ class WhisperTranscriber:
         logger.info("Loading faster-whisper model: %s on %s", model_size, device)
         return WhisperModel(model_size, device=device, compute_type=compute_type)
 
-    def transcribe(self, audio_bytes: bytes) -> str:
+    def transcribe(
+        self,
+        audio_bytes: bytes,
+        *,
+        content_type: str | None = None,
+    ) -> str:
         """Transcribe a chunk of audio bytes to text.
 
         Returns the concatenated text from all segments. Empty string if
@@ -52,8 +57,11 @@ class WhisperTranscriber:
         complete utterance — this is not a streaming interface.
 
         We accept WAV/PCM/Opus-encoded bytes; faster-whisper auto-detects
-        via librosa/soundfile under the hood.
+        via librosa/soundfile under the hood. ``content_type`` is
+        accepted for interface parity with SarvamTranscriber and ignored
+        here; the local model sniffs the container itself.
         """
+        _ = content_type
         segments, _info = self._model.transcribe(
             io.BytesIO(audio_bytes),
             language=self._language,
