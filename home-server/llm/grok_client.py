@@ -187,14 +187,18 @@ class GrokClient(LLMClient):
                 return ToolCall(name=name, arguments=args)
 
         text = (raw or "").lower() + " " + (transcript or "").lower()
-        if any(k in text for k in ("wrong", "not right", "incorrect", "no")):
-            reason = transcript or raw
-            return ToolCall(name="flagWrong", arguments={"reason": reason})
+        # Longer / more specific phrases first so e.g. "no more" maps to
+        # closeForever, not a standalone-word ``no`` match for flagWrong.
         if any(k in text for k in ("never", "stop reminding", "don't remind", "no more")):
             category = "stove_reminder" if "stove" in text else "medicine_reminder"
             return ToolCall(name="closeForever", arguments={"category": category})
         if any(k in text for k in ("remind me later", "not now", "in a bit")):
             return ToolCall(name="dismissTemporarily", arguments={})
+        if any(k in text for k in ("wrong", "not right", "incorrect")) or re.search(
+            r"\bno\b", text
+        ):
+            reason = transcript or raw
+            return ToolCall(name="flagWrong", arguments={"reason": reason})
 
         # Pure conversational text from the LLM: surface it as a spoken
         # assistant reply rather than dropping it on the floor. This is
