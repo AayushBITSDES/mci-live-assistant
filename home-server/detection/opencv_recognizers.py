@@ -93,6 +93,11 @@ class OpenCVFaceRecognizer:
         self._refs: dict[str, list[Any]] = {}
         cascade_path = getattr(self._cv2.data, "haarcascades", "") + "haarcascade_frontalface_default.xml"
         self._cascade = self._cv2.CascadeClassifier(cascade_path)
+        if self._cascade.empty():
+            logger.warning(
+                "OpenCV face recognizer: cascade not loaded from %s; face detection disabled",
+                cascade_path,
+            )
 
         for person_dir in sorted(Path(faces_root).iterdir()) if Path(faces_root).is_dir() else []:
             if not person_dir.is_dir():
