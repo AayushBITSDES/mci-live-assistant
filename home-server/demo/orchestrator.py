@@ -158,8 +158,11 @@ class DemoOrchestrator:
                 )]
         if self.state.stove_state == "reminded":
             reminded_at = self.state.stove_first_reminded_at or self.state.stove_started_at
-            if reminded_at is not None and now - reminded_at >= (
-                self._stove_escalation_delay - self._stove_first_delay
+            escalation_window = self._stove_escalation_delay - self._stove_first_delay
+            if (
+                reminded_at is not None
+                and escalation_window > timedelta(0)
+                and now - reminded_at >= escalation_window
             ):
                 return self._escalate_stove()
         return []

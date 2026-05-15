@@ -125,7 +125,13 @@ def create_app() -> FastAPI:
             "http://localhost:5173",
             "http://127.0.0.1:5173",
         ],
-        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|[0-9.]+|[a-zA-Z0-9.-]+\.local):5173",
+        allow_origin_regex=(
+            r"https?://("
+            r"localhost|127\.0\.0\.1|0\.0\.0\.0|"
+            r"(10|172\.1[6-9]|172\.2\d|172\.3[01]|192\.168)\.[0-9.]+|"
+            r"[a-zA-Z0-9.-]+\.local"
+            r"):5173"
+        ),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -530,20 +536,20 @@ async def _synthesize_sentence(heavy: Heavy, sentence: str) -> bytes | None:
 
 
 _NAME_PREFIXES: tuple[str, ...] = (
-    "hi my name is ",
     "hello my name is ",
-    "hi i'm ",
-    "hello i'm ",
-    "hi i am ",
+    "hi my name is ",
     "hello i am ",
     "my name is ",
-    "i'm ",
+    "the name's ",
+    "hello i'm ",
+    "hi i am ",
+    "this is ",
+    "call me ",
+    "hi i'm ",
+    "name's ",
     "i am ",
     "it's ",
-    "call me ",
-    "this is ",
-    "the name's ",
-    "name's ",
+    "i'm ",
 )
 
 _NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z\s'\-]{0,29}$")
