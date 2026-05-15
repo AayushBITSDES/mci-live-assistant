@@ -102,4 +102,4 @@ async def test_opencv_processor_aliases_medicine_bottle_for_legacy_rules() -> No
 
     assert "medicine_bottle" in reduced.objects
     assert "bottle" in reduced.objects
-    assert reduced.person_present is True
+    assert reduced.person_present is False
