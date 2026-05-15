@@ -34,7 +34,7 @@ class OpenCVFrameProcessor:
         reduced = RuleInput(
             timestamp=ts,
             objects=reduced_objects,
-            person_present=bool(full.faces or full.objects),
+            person_present=bool(full.faces),
             recognized_names=full.recognized_names,
         )
         return full, reduced
