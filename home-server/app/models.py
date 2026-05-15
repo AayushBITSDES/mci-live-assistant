@@ -30,9 +30,17 @@ class AudioChunkMessage(BaseModel):
     type: Literal["audio"] = "audio"
     device_id: str
     timestamp: datetime
-    audio_b64: str = Field(..., description="Base64 PCM/Opus chunk")
+    audio_b64: str = Field(..., description="Base64-encoded recording bytes")
     sample_rate: int = 16000
     duration_ms: int
+    mime_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Actual MediaRecorder MIME type, e.g. 'audio/webm;codecs=opus' "
+            "or 'audio/mp4'. Optional for backwards compatibility; when "
+            "absent the ASR adapter falls back to its default."
+        ),
+    )
 
 
 class StatusMessage(BaseModel):
@@ -92,6 +100,7 @@ class AssistantReplyMessage(BaseModel):
     """A short spoken/text response for natural user conversation."""
     type: Literal["assistant_reply"] = "assistant_reply"
     sentence: str
+    audio_b64: Optional[str] = None
 
 
 class EdgeControlMessage(BaseModel):

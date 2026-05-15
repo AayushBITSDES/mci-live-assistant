@@ -41,7 +41,6 @@ from app.models import AudioChunkMessage, FrameMessage, NudgeMessage, NudgePrior
 from context.builder import build_summary
 from context.event_log import append_event
 from context.manager import ContextManager
-from detection.processor import FrameProcessor
 from llm.base import CommandResult, LLMClient, ToolCall
 from llm.tools import SNOOZE_DURATION_SECONDS
 from triggers.gate import TriggerGate
@@ -65,6 +64,29 @@ _SAFETY_KINDS = {
 }
 
 
+# Replies the app emits verbatim across many sessions. Pre-synthesizing
+# them at startup means the corresponding voice command path skips the
+# Sarvam TTS round trip entirely (~600-1000ms shaved per hit). If any
+# of these strings drift out of sync with the call sites that emit
+# them, the cache simply misses and the live TTS path takes over —
+# no correctness risk, just lost speed. Source call sites are noted
+# inline so future renames stay coordinated.
+PRESYNTH_REPLIES: tuple[str, ...] = (
+    # app.main onboarding flow (first greeting on connect)
+    "Hello, I'm Shanta. What should I call you?",
+    # pipeline._local_voice_command (hello/presence)
+    "I am here and listening.",
+    # demo.orchestrator.DemoOrchestrator.handle_voice_tool (markDone)
+    "Got it, your vitamin is marked done.",
+    "Got it, the stove risk is marked resolved.",
+    # demo.orchestrator.DemoOrchestrator.resolve_stove
+    "Thanks, I can see you are checking the stove.",
+)
+
+
+ONBOARDING_GREETING = "Hello, I'm Shanta. What should I call you?"
+
+
 NudgeCallback = Callable[[NudgeMessage], Awaitable[None]]
 
 
@@ -78,10 +100,62 @@ class Heavy:
     optional — text-only nudges still work without Piper, and the
     audio path becomes a no-op log without Whisper.
     """
-    processor: FrameProcessor
+    processor: object
     llm: LLMClient
     tts: Optional[object] = None          # PiperSynthesizer when available
-    whisper: Optional[object] = None      # WhisperTranscriber when available
+    whisper: Optional[object] = None      # ASR provider when available
+
+    def __init__(
+        self,
+        processor: object,
+        llm: LLMClient,
+        *,
+        tts: Optional[object] = None,
+        whisper: Optional[object] = None,
+        vision_provider: str = "opencv",
+    ) -> None:
+        self.processor = processor
+        self.llm = llm
+        self.tts = tts
+        self.whisper = whisper
+        self.vision_provider = vision_provider
+        # Sentence -> raw audio bytes (WAV). Populated by
+        # ``prewarm_tts_cache`` at startup. Empty when TTS is unavailable
+        # or the warm-up call failed; callers should treat a miss as
+        # "synthesize live".
+        self.tts_cache: dict[str, bytes] = {}
+
+    async def prewarm_tts_cache(
+        self, sentences: tuple[str, ...] = PRESYNTH_REPLIES
+    ) -> None:
+        """Synthesize each deterministic reply once and remember the bytes.
+
+        Runs the synth calls in parallel via ``asyncio.to_thread`` so a
+        4-sentence warm-up only blocks startup for as long as the slowest
+        single call (typically ~1-2s once Sarvam is warm). Failures are
+        logged and skipped; a missing cache entry just means the live
+        TTS path runs for that sentence.
+        """
+        if self.tts is None or not sentences:
+            return
+
+        async def _synth(sentence: str) -> tuple[str, bytes]:
+            try:
+                wav = await asyncio.to_thread(self.tts.synthesize, sentence)
+            except Exception:
+                logger.exception("Heavy: TTS pre-warm failed for %r", sentence)
+                return sentence, b""
+            return sentence, wav or b""
+
+        results = await asyncio.gather(*(_synth(s) for s in sentences))
+        for sentence, wav in results:
+            if wav:
+                self.tts_cache[sentence] = wav
+        logger.info(
+            "Heavy: TTS cache primed | %d/%d entries",
+            len(self.tts_cache),
+            len(sentences),
+        )
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Optional["Heavy"]:
@@ -94,25 +168,25 @@ class Heavy:
         TTS failure does not kill Heavy (it's optional).
         """
         try:
-            from detection.faces import FaceRecognizer
-            from detection.yolo import YoloDetector
             from llm.factory import build_client
         except ImportError as exc:
             logger.warning("Heavy: required imports missing (%s) -> debug stub", exc)
             return None
 
-        # YoloDetector / FaceRecognizer / build_client all do LAZY imports
-        # inside their constructors. So missing torch/ultralytics/insightface
-        # surfaces as ImportError at instantiation time, not at module
-        # import time. Catch broadly here so any heavy dep gap degrades
-        # gracefully instead of crashing the server at startup.
         try:
-            yolo = YoloDetector(model_path=settings.yolo_model)
-            faces = FaceRecognizer(
-                store_path=settings.faces_dir / "embeddings.json",
-                model_name=settings.insightface_model,
-            )
-            processor = FrameProcessor(yolo=yolo, faces=faces)
+            if settings.vision_provider == "opencv":
+                from detection.opencv_processor import OpenCVFrameProcessor
+                processor = OpenCVFrameProcessor(reference_dir=settings.reference_dir)
+            else:
+                from detection.faces import FaceRecognizer
+                from detection.processor import FrameProcessor
+                from detection.yolo import YoloDetector
+                yolo = YoloDetector(model_path=settings.yolo_model)
+                faces = FaceRecognizer(
+                    store_path=settings.faces_dir / "embeddings.json",
+                    model_name=settings.insightface_model,
+                )
+                processor = FrameProcessor(yolo=yolo, faces=faces)
         except (ImportError, OSError, RuntimeError, ValueError) as exc:
             logger.warning("Heavy: vision pipeline failed to load (%s) -> debug stub", exc)
             return None
@@ -129,23 +203,47 @@ class Heavy:
 
         # TTS is optional; client has speechSynthesis fallback.
         tts: Optional[object] = None
-        try:
-            from audio.tts import PiperSynthesizer  # heavy import
-            tts = PiperSynthesizer(voice_name=settings.piper_voice)
-        except (ImportError, OSError, RuntimeError, TypeError) as exc:
-            logger.info("Heavy: TTS unavailable (%s) -> nudges will be text-only", exc)
+        if settings.tts_provider == "sarvam":
+            try:
+                from audio.sarvam_tts import SarvamSynthesizer
+                tts = SarvamSynthesizer(
+                    api_key=settings.sarvam_api_key,
+                    model=settings.sarvam_tts_model,
+                    speaker=settings.sarvam_tts_speaker,
+                    language_code=settings.sarvam_language_code,
+                )
+            except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                logger.info("Heavy: Sarvam TTS unavailable (%s) -> browser TTS fallback", exc)
+        elif settings.tts_provider == "piper":
+            try:
+                from audio.tts import PiperSynthesizer  # heavy import
+                tts = PiperSynthesizer(voice_name=settings.piper_voice)
+            except (ImportError, OSError, RuntimeError, TypeError) as exc:
+                logger.info("Heavy: Piper TTS unavailable (%s) -> browser TTS fallback", exc)
 
-        # Whisper is optional; without it the audio path is a no-op log.
+        # ASR is optional; without it the audio path is a no-op log.
         whisper: Optional[object] = None
-        try:
-            from audio.asr import WhisperTranscriber  # heavy import
-            whisper = WhisperTranscriber(model_size=settings.whisper_model)
-        except (ImportError, OSError, RuntimeError) as exc:
-            logger.info("Heavy: Whisper unavailable (%s) -> voice commands disabled", exc)
+        if settings.asr_provider == "sarvam":
+            try:
+                from audio.sarvam_asr import SarvamTranscriber
+                whisper = SarvamTranscriber(
+                    api_key=settings.sarvam_api_key,
+                    model=settings.sarvam_stt_model,
+                    language_code=settings.sarvam_language_code,
+                )
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                logger.info("Heavy: Sarvam ASR unavailable (%s) -> voice commands disabled", exc)
+        elif settings.asr_provider == "whisper":
+            try:
+                from audio.asr import WhisperTranscriber  # heavy import
+                whisper = WhisperTranscriber(model_size=settings.whisper_model)
+            except (ImportError, OSError, RuntimeError) as exc:
+                logger.info("Heavy: Whisper unavailable (%s) -> voice commands disabled", exc)
 
         logger.info(
-            "Heavy: ready | provider=%s | tts=%s | asr=%s",
+            "Heavy: ready | provider=%s | vision=%s | tts=%s | asr=%s",
             settings.active_llm_provider,
+            settings.vision_provider,
             "on" if tts is not None else "off",
             "on" if whisper is not None else "off",
         )
@@ -215,7 +313,7 @@ class Session:
 
     # --- Frame path --------------------------------------------------------
 
-    async def handle_frame(self, frame: FrameMessage) -> None:
+    async def handle_frame(self, frame: FrameMessage):
         """Run vision + gate, queue any candidates. Returns immediately.
 
         Vision + rule evaluation are synchronous awaits (~30ms on GPU,
@@ -223,13 +321,13 @@ class Session:
         worker, decoupled from frame arrival.
         """
         if self._closed:
-            return
+            return None
 
         try:
             image_bytes = base64.b64decode(frame.image_b64)
         except Exception as exc:
             logger.warning("Session: bad image_b64 (%s) - skipping frame", exc)
-            return
+            return None
 
         try:
             _full, reduced = await self._heavy.processor.process(
@@ -244,13 +342,14 @@ class Session:
         except Exception:
             logger.exception("Session: TriggerGate raised - skipping frame")
             self._gate_events.clear()
-            return
+            return None
 
         # Flush state-change events to the audit log off-thread.
         await self._flush_gate_events()
 
         for candidate in candidates:
             self._enqueue_or_drop_oldest(candidate, frame.image_b64)
+        return reduced
 
     # --- Internals ---------------------------------------------------------
 
@@ -364,20 +463,22 @@ class Session:
 
     # --- Audio path --------------------------------------------------------
 
-    async def handle_audio(self, audio: AudioChunkMessage) -> Optional[tuple[str, CommandResult]]:
-        """Transcribe an audio chunk and dispatch any resulting tool call.
+    async def transcribe_audio(self, audio: AudioChunkMessage) -> Optional[str]:
+        """ASR-only path: returns a cleaned transcript or None.
 
-        Independent of the frame path: an audio chunk is its own
-        utterance; we transcribe, ask the LLM to map it to a tool, then
-        apply the tool's state changes. Failures at any stage are logged
-        and the next chunk is processed normally.
+        Shared by ``handle_audio`` (regular command flow) and the WS
+        layer's onboarding flow, which needs the raw transcript without
+        also running it through the LLM/tool dispatch.
+
+        Returns ``None`` for any reason the chunk shouldn't be processed:
+        session closed, no ASR adapter, bad/empty audio, empty
+        transcript, or single-word filler ("okay", "uh", ...). All
+        failures are logged.
         """
         if self._closed:
             return None
         whisper = self._heavy.whisper
         if whisper is None:
-            # Voice commands are not available in this build (no Whisper).
-            # Acknowledge silently so the protocol stays clean.
             return None
 
         try:
@@ -390,7 +491,11 @@ class Session:
 
         asr_started = time.perf_counter()
         try:
-            transcript = await asyncio.to_thread(whisper.transcribe, audio_bytes)
+            transcript = await asyncio.to_thread(
+                whisper.transcribe,
+                audio_bytes,
+                content_type=audio.mime_type,
+            )
         except Exception:
             logger.exception("Session: Whisper failed - skipping audio chunk")
             return None
@@ -398,10 +503,25 @@ class Session:
 
         transcript = (transcript or "").strip()
         if not transcript:
-            # VAD inside Whisper filtered the chunk down to silence.
+            return None
+        logger.info("Session: audio transcript=%r", transcript)
+        if _is_filler_transcript(transcript):
+            logger.info("Session: dropping filler/noise transcript")
+            return None
+        return transcript
+
+    async def handle_audio(self, audio: AudioChunkMessage) -> Optional[tuple[str, CommandResult]]:
+        """Transcribe an audio chunk and dispatch any resulting tool call.
+
+        Independent of the frame path: an audio chunk is its own
+        utterance; we transcribe, ask the LLM to map it to a tool, then
+        apply the tool's state changes. Failures at any stage are logged
+        and the next chunk is processed normally.
+        """
+        transcript = await self.transcribe_audio(audio)
+        if transcript is None:
             return None
 
-        logger.info("Session: audio transcript=%r", transcript)
         command = _local_voice_command(transcript)
         if command is None:
             llm_started = time.perf_counter()
@@ -554,6 +674,35 @@ class Session:
 
 
 # --- Helpers --------------------------------------------------------------
+
+# Single-word transcripts the ASR commonly hallucinates on silence or
+# background noise. None of these are useful as commands on their own,
+# and forwarding them to the LLM produces a useless "I'm not sure what
+# you want" reply that the TTS then speaks back at the user.
+_FILLER_WORDS: frozenset[str] = frozenset({
+    "okay", "ok", "k", "kay",
+    "yeah", "yep", "yup", "yah",
+    "uh", "um", "uhh", "umm",
+    "mm", "mmm", "hmm", "huh",
+    "ah", "oh", "eh", "huh",
+    "so", "the", "a", "an", "of", "to",
+})
+
+
+def _is_filler_transcript(transcript: str) -> bool:
+    """Return True for transcripts that are obvious ASR noise.
+
+    Only filters SINGLE-word transcripts. Multi-word utterances like
+    "okay I'll do it" are real intent and should reach the LLM. Real
+    short commands ("hello", "yes", "no", "done", "stop") are NOT in
+    the filler set so they still get through.
+    """
+    cleaned = transcript.lower().strip(".,!?;:- ")
+    if not cleaned:
+        return True
+    words = cleaned.split()
+    return len(words) == 1 and words[0] in _FILLER_WORDS
+
 
 def _local_voice_command(transcript: str) -> Optional[CommandResult]:
     """Deterministic fast path for privacy/audio controls.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from app.main import _messages_for_demo_action
 from app.models import DemoActionMessage
 from demo.orchestrator import DemoOrchestrator
@@ -24,34 +26,87 @@ def test_medicine_pending_reminds_by_name_and_resolves_on_done() -> None:
     assert "marked" in resolved[0]["sentence"].lower()
 
 
-def test_stove_ignores_escalate_to_caregiver_on_third_ignore() -> None:
+def test_stove_ignores_escalate_to_caregiver_on_second_ignore() -> None:
     demo = DemoOrchestrator()
     demo.set_visitor_name("Shanta")
 
     first = demo.trigger_stove_on(source="operator")
     second = demo.record_stove_ignored(reason="dismissTemporarily")
     third = demo.record_stove_ignored(reason="overlay_closed")
-    fourth = demo.record_stove_ignored(reason="auto_dismiss")
 
     assert first[0]["type"] == "nudge"
-    assert demo.state.stove_ignored_count == 3
+    assert demo.state.stove_ignored_count == 2
     assert not any(m["type"] == "caregiver_alert" for m in second)
-    assert not any(m["type"] == "caregiver_alert" for m in third)
 
-    caregiver_alerts = [m for m in fourth if m["type"] == "caregiver_alert"]
+    caregiver_alerts = [m for m in third if m["type"] == "caregiver_alert"]
     assert len(caregiver_alerts) == 1
     assert caregiver_alerts[0]["risk_type"] == "stove_on"
     assert caregiver_alerts[0]["visitor_name"] == "Shanta"
-    assert caregiver_alerts[0]["ignored_count"] == 3
+    assert caregiver_alerts[0]["ignored_count"] == 2
     assert demo.state.stove_state == "escalated"
+
+
+def test_stove_timers_remind_then_escalate_to_caregiver() -> None:
+    demo = DemoOrchestrator(
+        stove_first_reminder_seconds=30,
+        stove_escalation_seconds=60,
+    )
+    demo.set_visitor_name("Shanta")
+    start = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    demo.record_stove_interaction(now=start)
+
+    assert demo.check_stove_timers(now=start + timedelta(seconds=29)) == []
+    first = demo.check_stove_timers(now=start + timedelta(seconds=30))
+    second = demo.check_stove_timers(now=start + timedelta(seconds=60))
+
+    assert first[0]["type"] == "nudge"
+    assert "stove" in first[0]["sentence"].lower()
+    assert any(m["type"] == "nudge" for m in second)
+    assert any(m["type"] == "caregiver_alert" for m in second)
+    assert demo.state.stove_state == "escalated"
+
+
+def test_operator_stove_start_uses_full_timer_sequence() -> None:
+    demo = DemoOrchestrator(
+        stove_first_reminder_seconds=30,
+        stove_escalation_seconds=60,
+    )
+    demo.set_visitor_name("Shanta")
+    start = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    demo.trigger_stove_on(source="operator")
+    demo.state.stove_started_at = start
+
+    assert demo.state.stove_state == "active"
+    assert demo.state.stove_first_reminded_at is None
+    assert demo.check_stove_timers(now=start + timedelta(seconds=29)) == []
+    first = demo.check_stove_timers(now=start + timedelta(seconds=30))
+    second = demo.check_stove_timers(now=start + timedelta(seconds=60))
+
+    assert any(m["type"] == "nudge" for m in first)
+    assert any(m["type"] == "caregiver_alert" for m in second)
+
+
+def test_returning_to_stove_after_leaving_resolves_risk() -> None:
+    demo = DemoOrchestrator()
+    start = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    assert demo.record_stove_interaction(now=start) == []
+    assert demo.record_stove_interaction(now=start + timedelta(seconds=1)) == []
+    demo.record_stove_absent()
+    resolved = demo.record_stove_interaction(now=start + timedelta(seconds=2))
+
+    assert resolved[0]["type"] == "assistant_reply"
+    assert "checking the stove" in resolved[0]["sentence"]
+    assert demo.state.stove_state == "off"
 
 
 def test_caregiver_acknowledgement_marks_alert_seen() -> None:
     demo = DemoOrchestrator()
     demo.trigger_stove_on(source="operator")
     demo.record_stove_ignored(reason="one")
-    demo.record_stove_ignored(reason="two")
-    messages = demo.record_stove_ignored(reason="three")
+    messages = demo.record_stove_ignored(reason="two")
     alert_id = next(m["alert_id"] for m in messages if m["type"] == "caregiver_alert")
 
     ack = demo.acknowledge_caregiver_alert(alert_id)
@@ -83,10 +138,36 @@ def test_face_cue_uses_profile_and_cooldown() -> None:
 def test_default_face_profile_supports_exhibition_guide() -> None:
     demo = DemoOrchestrator()
 
-    first = demo.trigger_face_cue("Aayush")
+    first = demo.trigger_face_cue("Anya")
 
     assert first[0]["type"] == "assistant_reply"
-    assert "Aayush" in first[0]["sentence"]
+    assert "Anya" in first[0]["sentence"]
+
+
+def test_face_cue_rearms_after_rearm_delay() -> None:
+    demo = DemoOrchestrator(face_cue_rearm_seconds=10)
+    t0 = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    first = demo.trigger_face_cue("Anya", now=t0)
+    inside = demo.trigger_face_cue("Anya", now=t0 + timedelta(seconds=5))
+    outside = demo.trigger_face_cue("Anya", now=t0 + timedelta(seconds=15))
+
+    assert first and first[0]["type"] == "assistant_reply"
+    assert inside == []
+    assert outside and outside[0]["type"] == "assistant_reply"
+
+
+def test_reset_face_cues_allows_immediate_refire() -> None:
+    demo = DemoOrchestrator(face_cue_rearm_seconds=600)
+
+    first = demo.trigger_face_cue("Anya")
+    blocked = demo.trigger_face_cue("Anya")
+    demo.reset_face_cues()
+    after_reset = demo.trigger_face_cue("Anya")
+
+    assert first and first[0]["type"] == "assistant_reply"
+    assert blocked == []
+    assert after_reset and after_reset[0]["type"] == "assistant_reply"
 
 
 def test_non_command_voice_gets_contextual_assistant_reply() -> None:
@@ -121,15 +202,33 @@ def test_demo_action_only_counts_stove_scenario() -> None:
         action="nudge_auto_dismiss",
         scenario="stove_on",
     ))
-    third = _messages_for_demo_action(demo, DemoActionMessage(
-        device_id="edge-demo",
-        action="nudge_closed",
-        scenario="stove_on",
-    ))
-
     assert unrelated == []
     assert first == []
-    assert second == []
-    assert any(m["type"] == "nudge" for m in third)
-    assert any(m["type"] == "caregiver_alert" for m in third)
-    assert demo.state.stove_ignored_count == 3
+    assert any(m["type"] == "nudge" for m in second)
+    assert any(m["type"] == "caregiver_alert" for m in second)
+    assert demo.state.stove_ignored_count == 2
+
+
+def test_medicine_bottle_seen_while_pending_returns_to_handled() -> None:
+    """Picking up the bottle after the nudge should reset the timer cycle."""
+    demo = DemoOrchestrator()
+    demo.trigger_medicine_pending(source="operator")
+    assert demo.state.medicine_state == "pending"
+    t0 = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+    demo.record_medicine_bottle_seen(now=t0)
+    assert demo.state.medicine_state == "handled"
+    assert demo.state.medicine_last_seen_at == t0
+
+
+def test_medicine_bottle_seen_then_absent_after_delay_triggers_reminder() -> None:
+    demo = DemoOrchestrator(medicine_reminder_delay_seconds=30)
+    demo.set_visitor_name("Maya")
+    start = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+
+    demo.record_medicine_bottle_seen(now=start)
+
+    assert demo.check_medicine_reminder(now=start + timedelta(seconds=29)) == []
+    reminder = demo.check_medicine_reminder(now=start + timedelta(seconds=30))
+    assert reminder[0]["type"] == "nudge"
+    assert "Maya" in reminder[0]["sentence"]
+    assert "vitamin" in reminder[0]["sentence"].lower()

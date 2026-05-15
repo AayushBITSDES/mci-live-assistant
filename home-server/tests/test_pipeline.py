@@ -164,9 +164,16 @@ class _FakeWhisper:
         self._transcript = transcript
         self._raise = raise_on_call
         self.calls: list[bytes] = []
+        self.content_types: list[str | None] = []
 
-    def transcribe(self, audio_bytes: bytes) -> str:
+    def transcribe(
+        self,
+        audio_bytes: bytes,
+        *,
+        content_type: str | None = None,
+    ) -> str:
         self.calls.append(audio_bytes)
+        self.content_types.append(content_type)
         if self._raise:
             raise RuntimeError("whisper blew up")
         return self._transcript
@@ -609,7 +616,7 @@ def test_heavy_returns_none_when_required_imports_missing(monkeypatch) -> None:
     monkeypatch.setattr(builtins, "__import__", _no_yolo)
 
     from app.config import Settings
-    fake = Settings()
+    fake = Settings(vision_provider="yolo", active_llm_provider="grok", xai_api_key="x")
     result = Heavy.from_settings(fake)
     assert result is None
 

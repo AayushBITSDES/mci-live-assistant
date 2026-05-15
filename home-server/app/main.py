@@ -22,13 +22,15 @@ React client growing a MediaRecorder send path.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,10 +50,11 @@ from app.models import (
     StatusMessage,
     VoiceCommandMessage,
 )
-from app.pipeline import Heavy, Session
+from app.pipeline import Heavy, ONBOARDING_GREETING, Session
 from context.event_log import append_event
 from context.manager import ContextManager
 from context.replay import replay_recent
+from demo.observations import ObservationAdapter
 from demo.orchestrator import DemoOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -76,13 +79,20 @@ async def lifespan(app: FastAPI):
         replayed = replay_recent(cm, lookback_hours=settings.replay_lookback_hours)
         logger.info("Replayed %d recent events into ContextManager", replayed)
     app.state.context_manager = cm
-    app.state.demo_orchestrator = DemoOrchestrator()
+    app.state.demo_orchestrator = DemoOrchestrator(
+        medicine_reminder_delay_seconds=settings.medicine_reminder_delay_seconds,
+        stove_first_reminder_seconds=settings.stove_first_reminder_seconds,
+        stove_escalation_seconds=settings.stove_escalation_seconds,
+    )
+    app.state.observation_adapter = ObservationAdapter()
     app.state.edge_sockets = set()
     app.state.caregiver_sockets = set()
 
     # Try to build the live pipeline. Missing ML deps / weights / API
     # keys fall back to the debug stub without crashing the server.
     app.state.heavy = Heavy.from_settings(settings)
+    if app.state.heavy is not None:
+        await app.state.heavy.prewarm_tts_cache()
 
     logger.info(
         "Home server ready | provider=%s | fps=%d | mode=%s | api_key=%s",
@@ -91,7 +101,15 @@ async def lifespan(app: FastAPI):
         "live" if app.state.heavy is not None else "debug-stub",
         "set" if (settings.xai_api_key or settings.google_api_key) else "missing",
     )
-    yield
+    try:
+        yield
+    finally:
+        heavy = getattr(app.state, "heavy", None)
+        if heavy is not None:
+            for component in (getattr(heavy, "tts", None), getattr(heavy, "whisper", None)):
+                close = getattr(component, "close", None)
+                if callable(close):
+                    await asyncio.to_thread(close)
 
 
 def create_app() -> FastAPI:
@@ -165,6 +183,7 @@ def create_app() -> FastAPI:
                 "server_time": datetime.now(timezone.utc).isoformat(),
             }]
 
+        await _enrich_messages_with_audio(app, messages)
         await _broadcast_caregiver_messages(app, messages)
         await _broadcast_edge_messages(app, messages)
         return {"messages": messages}
@@ -237,6 +256,33 @@ def create_app() -> FastAPI:
             )
             await session.start()
 
+        # Voice-driven onboarding: when no visitor name is set yet, greet
+        # the user and listen for the next audio chunk as their name.
+        # If a name was typed into the operator/edge field first (the
+        # http POST runs before this WS opens), skip and go straight to
+        # normal command mode.
+        demo_state: DemoOrchestrator = ws.app.state.demo_orchestrator
+        awaiting_name = (
+            session is not None
+            and not (demo_state.state.visitor_name or "").strip()
+        )
+        name_onboarding_retry_used = False
+        if awaiting_name:
+            greeting_audio = await _maybe_synthesize_reply(ws.app, ONBOARDING_GREETING)
+            greeting = AssistantReplyMessage(
+                sentence=ONBOARDING_GREETING,
+                audio_b64=greeting_audio,
+            )
+            await ws.send_text(greeting.model_dump_json())
+            # Auto-open the mic so the user can just answer without
+            # hunting for a button. The edge client treats this like any
+            # other voice-tool control and prompts for permission once.
+            await ws.send_text(EdgeControlMessage(
+                target="mic",
+                action="on",
+                reason="onboarding",
+            ).model_dump_json())
+
         frame_counter = 0
 
         try:
@@ -250,7 +296,14 @@ def create_app() -> FastAPI:
                         # Live pipeline. Vision + gate run synchronously here;
                         # the LLM + TTS happen on the session's worker task
                         # and arrive via the on_nudge callback later.
-                        await session.handle_frame(parsed)
+                        observation = await session.handle_frame(parsed)
+                        if observation is not None:
+                            demo: DemoOrchestrator = ws.app.state.demo_orchestrator
+                            adapter: ObservationAdapter = ws.app.state.observation_adapter
+                            messages = adapter.apply(demo, observation)
+                            await _enrich_messages_with_audio(ws.app, messages)
+                            await _broadcast_caregiver_messages(ws.app, messages)
+                            await _broadcast_edge_messages(ws.app, messages)
                     else:
                         nudge = await _maybe_emit_debug_nudge(frame_counter)
                         if nudge is not None:
@@ -261,7 +314,53 @@ def create_app() -> FastAPI:
                     # voice-command tool dispatch. In debug-stub mode (no
                     # Heavy on dev box) we just parse-and-discard so the
                     # protocol stays clean.
-                    if session is not None:
+                    if session is not None and awaiting_name:
+                        transcript = await session.transcribe_audio(parsed)
+                        if transcript:
+                            name = _extract_name_from_transcript(transcript)
+                            # Echo what we heard so the user sees we got it.
+                            await ws.send_text(VoiceCommandMessage(
+                                transcript=transcript,
+                                tool=None,
+                                raw=name or "",
+                                provider="onboarding",
+                            ).model_dump_json())
+                            if name:
+                                demo_state.set_visitor_name(name)
+                                awaiting_name = False
+                                await asyncio.to_thread(
+                                    append_event,
+                                    {
+                                        "event_type": "visitor_name_set",
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                        "name": name,
+                                        "source": "voice_onboarding",
+                                    },
+                                )
+                                confirmation = f"Nice to meet you, {name}."
+                                conf_audio = await _maybe_synthesize_reply(ws.app, confirmation)
+                                await ws.send_text(AssistantReplyMessage(
+                                    sentence=confirmation,
+                                    audio_b64=conf_audio,
+                                ).model_dump_json())
+                            else:
+                                # Couldn't parse a name; one TTS re-prompt, then stop
+                                # onboarding (avoids Sarvam spam on every rejected chunk).
+                                if not name_onboarding_retry_used:
+                                    name_onboarding_retry_used = True
+                                    retry = "Sorry, I didn't catch that. What should I call you?"
+                                    retry_audio = await _maybe_synthesize_reply(ws.app, retry)
+                                    await ws.send_text(AssistantReplyMessage(
+                                        sentence=retry,
+                                        audio_b64=retry_audio,
+                                    ).model_dump_json())
+                                else:
+                                    awaiting_name = False
+                                    logger.info(
+                                        "WS onboarding: voice name not parsed after retry; "
+                                        "continuing without voice name"
+                                    )
+                    elif session is not None:
                         result = await session.handle_audio(parsed)
                         if result is not None:
                             transcript, command = result
@@ -276,7 +375,22 @@ def create_app() -> FastAPI:
                                 await ws.send_text(control.model_dump_json())
                             reply = _assistant_reply_from_command(command)
                             if reply is not None:
+                                reply_audio = await _maybe_synthesize_reply(ws.app, reply.sentence)
+                                if reply_audio:
+                                    reply = reply.model_copy(update={"audio_b64": reply_audio})
                                 await ws.send_text(reply.model_dump_json())
+                            demo_messages: list[dict[str, Any]] = []
+                            demo: DemoOrchestrator = ws.app.state.demo_orchestrator
+                            if command.tool is not None:
+                                demo_messages = demo.handle_voice_tool(
+                                    command.tool.name,
+                                    command.tool.arguments or {},
+                                )
+                            await _enrich_messages_with_audio(ws.app, demo_messages)
+                            await _broadcast_caregiver_messages(ws.app, demo_messages)
+                            for message in _edge_messages(demo_messages):
+                                await ws.send_text(json.dumps(message))
+                            await _broadcast_edge_messages(ws.app, demo_messages, exclude=ws)
 
                 elif msg_type == "status":
                     logger.info(
@@ -288,6 +402,7 @@ def create_app() -> FastAPI:
                 elif msg_type == "demo_action":
                     demo: DemoOrchestrator = ws.app.state.demo_orchestrator
                     messages = _messages_for_demo_action(demo, parsed)
+                    await _enrich_messages_with_audio(ws.app, messages)
                     await _broadcast_caregiver_messages(ws.app, messages)
                     await _broadcast_edge_messages(ws.app, messages)
 
@@ -393,6 +508,109 @@ def _assistant_reply_from_command(command) -> AssistantReplyMessage | None:
     return AssistantReplyMessage(sentence=sentence)
 
 
+async def _synthesize_sentence(heavy: Heavy, sentence: str) -> bytes | None:
+    """Return raw WAV bytes for ``sentence``, preferring the pre-warmed cache.
+
+    Falls back to a live Sarvam call on cache miss. Returns ``None`` on
+    empty input or synthesis failure so callers can keep the text-only
+    message.
+    """
+    sentence = sentence.strip()
+    if not sentence or heavy.tts is None:
+        return None
+    cached = heavy.tts_cache.get(sentence)
+    if cached:
+        return cached
+    try:
+        wav_bytes = await asyncio.to_thread(heavy.tts.synthesize, sentence)
+    except Exception:
+        logger.exception("TTS synthesis failed for %r", sentence[:60])
+        return None
+    return wav_bytes or None
+
+
+_NAME_PREFIXES: tuple[str, ...] = (
+    "hi my name is ",
+    "hello my name is ",
+    "hi i'm ",
+    "hello i'm ",
+    "hi i am ",
+    "hello i am ",
+    "my name is ",
+    "i'm ",
+    "i am ",
+    "it's ",
+    "call me ",
+    "this is ",
+    "the name's ",
+    "name's ",
+)
+
+_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z\s'\-]{0,29}$")
+
+
+def _extract_name_from_transcript(transcript: str) -> Optional[str]:
+    """Pull a likely name out of an onboarding ASR transcript.
+
+    Strips common conversational lead-ins ("my name is...", "I'm...") and
+    returns the first 1-2 leftover words if they look like a name. Returns
+    ``None`` when the transcript doesn't shape like a name at all, so the
+    caller can re-prompt instead of saving "what".
+    """
+    text = transcript.strip().rstrip(".!?,;:")
+    if not text:
+        return None
+    lower = text.lower()
+    for prefix in _NAME_PREFIXES:  # already ordered longest-first
+        if lower.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    words = text.split()
+    if not words or len(words) > 4:
+        return None
+    candidate = " ".join(words[:2])
+    if not _NAME_PATTERN.match(candidate):
+        return None
+    return candidate.title()
+
+
+async def _enrich_messages_with_audio(
+    app: FastAPI, messages: list[dict[str, Any]]
+) -> None:
+    """Populate ``audio_b64`` on nudge/assistant_reply messages via Sarvam TTS.
+
+    Demo orchestrator and observation adapter messages arrive without
+    server-rendered audio. If TTS is available we synthesize once here so
+    the edge client can play a real voice instead of falling back to the
+    browser's robotic speechSynthesis. Pre-warmed sentences skip the
+    network call entirely.
+    """
+    heavy: Heavy | None = getattr(app.state, "heavy", None)
+    if heavy is None or heavy.tts is None:
+        return
+    for message in messages:
+        if message.get("type") not in {"nudge", "assistant_reply"}:
+            continue
+        if message.get("audio_b64"):
+            continue
+        sentence = str(message.get("sentence", "")).strip()
+        if not sentence:
+            continue
+        wav_bytes = await _synthesize_sentence(heavy, sentence)
+        if wav_bytes:
+            message["audio_b64"] = base64.b64encode(wav_bytes).decode("ascii")
+
+
+async def _maybe_synthesize_reply(app: FastAPI, sentence: str) -> str | None:
+    heavy: Heavy | None = getattr(app.state, "heavy", None)
+    if heavy is None:
+        return None
+    wav_bytes = await _synthesize_sentence(heavy, sentence)
+    if not wav_bytes:
+        return None
+    return base64.b64encode(wav_bytes).decode("ascii")
+
+
 async def _maybe_emit_debug_nudge(frame_counter: int):
     """Periodic hardcoded nudge for wire-format smoke tests.
 
@@ -454,10 +672,7 @@ async def _broadcast_edge_messages(
     if not sockets:
         return
 
-    edge_messages = [
-        m for m in messages
-        if m.get("type") in {"nudge", "assistant_reply", "edge_control"}
-    ]
+    edge_messages = _edge_messages(messages)
     if not edge_messages:
         return
 
@@ -473,6 +688,13 @@ async def _broadcast_edge_messages(
                 break
     for ws in stale:
         sockets.discard(ws)
+
+
+def _edge_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        m for m in messages
+        if m.get("type") in {"nudge", "assistant_reply", "edge_control"}
+    ]
 
 
 app = create_app()

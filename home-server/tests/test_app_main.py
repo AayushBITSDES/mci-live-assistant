@@ -36,6 +36,12 @@ def _isolated_settings(tmp_path: Path, *, fresh_start: bool = True) -> Settings:
     touches the real ./storage tree."""
     return Settings(
         fresh_start=fresh_start,
+        active_llm_provider="grok",
+        xai_api_key="",
+        google_api_key="",
+        sarvam_api_key="",
+        asr_provider="off",
+        tts_provider="browser",
         storage_root=tmp_path / "storage",
         events_dir=tmp_path / "storage" / "events",
         faces_dir=tmp_path / "storage" / "faces",
@@ -209,8 +215,15 @@ class _StubWhisper:
 
     def __init__(self, transcript: str) -> None:
         self._transcript = transcript
+        self.last_content_type: str | None = None
 
-    def transcribe(self, audio_bytes: bytes) -> str:
+    def transcribe(
+        self,
+        audio_bytes: bytes,
+        *,
+        content_type: str | None = None,
+    ) -> str:
+        self.last_content_type = content_type
         return self._transcript
 
 
@@ -256,6 +269,7 @@ def test_ws_live_mode_emits_real_nudge_when_gate_fires(
         # Lifespan ran; override Heavy with our fake AFTER startup so
         # graceful degradation can't accidentally null it out.
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=live-test") as ws:
             base = datetime.now(timezone.utc)
             # Open kitchen activity
@@ -294,6 +308,7 @@ def test_ws_live_mode_quiet_frames_yield_no_nudges(monkeypatch, tmp_path: Path) 
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=quiet-test") as ws:
             base = datetime.now(timezone.utc)
             for i in range(10):
@@ -384,6 +399,7 @@ def test_ws_live_mode_audio_chunk_dispatches_mark_done(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=audio-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",
@@ -395,6 +411,7 @@ def test_ws_live_mode_audio_chunk_dispatches_mark_done(
             }))
             voice_data = ws.receive_text()
             voice_payload = json.loads(voice_data)
+            reply_payload = json.loads(ws.receive_text())
 
             # Round-trip a ping so we know the audio message has been
             # fully processed by the server's WS loop before we inspect state.
@@ -405,6 +422,8 @@ def test_ws_live_mode_audio_chunk_dispatches_mark_done(
         assert voice_payload["type"] == "voice_command"
         assert voice_payload["transcript"] == "I already took my pill"
         assert voice_payload["tool"] == "markDone"
+        assert reply_payload["type"] == "assistant_reply"
+        assert "marked done" in reply_payload["sentence"]
         assert payload["type"] == "ack" and payload["message"] == "pong"
         # The LLM was asked about the transcript
         assert llm.voice_calls == ["I already took my pill"]
@@ -441,6 +460,7 @@ def test_ws_live_mode_audio_toggle_camera_sends_edge_control(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=privacy-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",
@@ -479,6 +499,7 @@ def test_ws_live_mode_audio_toggle_audio_sends_edge_control(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=audio-control-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",
@@ -527,6 +548,7 @@ def test_ws_live_mode_audio_raw_text_falls_back_to_assistant_reply(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=raw-reply-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",
@@ -568,6 +590,7 @@ def test_ws_live_mode_audio_assistant_reply_sends_reply_message(
     app = create_app()
     with TestClient(app) as client:
         app.state.heavy = fake_heavy
+        app.state.demo_orchestrator.set_visitor_name("Tester")
         with client.websocket_connect("/ws/stream?device_id=reply-test") as ws:
             ws.send_text(json.dumps({
                 "type": "audio",
@@ -584,6 +607,52 @@ def test_ws_live_mode_audio_assistant_reply_sends_reply_message(
     assert voice_payload["tool"] == "assistantReply"
     assert reply_payload["type"] == "assistant_reply"
     assert "Aayush" in reply_payload["sentence"]
+
+
+def test_ws_onboarding_unparseable_name_replies_sorry_once_then_stops_tts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Second rejected transcript must not emit another Sarvam retry line."""
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    monkeypatch.setattr("context.event_log.settings", test_settings)
+
+    # Five words -> _extract_name_from_transcript returns None.
+    bad = "one two three four five"
+    fake_heavy = Heavy(
+        processor=_RecordingProcessor([]),  # type: ignore[arg-type]
+        llm=_RecordingLLM("(unused)", voice_tool=None),  # type: ignore[arg-type]
+        tts=None,
+        whisper=_StubWhisper(bad),
+    )
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.heavy = fake_heavy
+        assert not (app.state.demo_orchestrator.state.visitor_name or "").strip()
+        with client.websocket_connect("/ws/stream?device_id=name-retry-test") as ws:
+            assert json.loads(ws.receive_text())["type"] == "assistant_reply"
+            assert json.loads(ws.receive_text())["type"] == "edge_control"
+            audio = {
+                "type": "audio",
+                "device_id": "name-retry-test",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "audio_b64": base64.b64encode(b"\x00\x01\x02").decode("ascii"),
+                "sample_rate": 16000,
+                "duration_ms": 3000,
+            }
+            ws.send_text(json.dumps(audio))
+            assert json.loads(ws.receive_text())["type"] == "voice_command"
+            sorry = json.loads(ws.receive_text())
+            assert sorry["type"] == "assistant_reply"
+            assert "Sorry" in sorry["sentence"]
+
+            ws.send_text(json.dumps(audio))
+            assert json.loads(ws.receive_text())["type"] == "voice_command"
+            ws.send_text(json.dumps({"type": "ping"}))
+            pong = json.loads(ws.receive_text())
+            assert pong["type"] == "ack" and pong["message"] == "pong"
+
+    assert not (app.state.demo_orchestrator.state.visitor_name or "").strip()
 
 
 def test_ws_audio_ignored_in_debug_stub_mode(monkeypatch, tmp_path: Path) -> None:
@@ -631,7 +700,7 @@ def test_demo_operator_medicine_event_returns_named_nudge(
     assert "vitamin" in body["messages"][0]["sentence"].lower()
 
 
-def test_demo_stove_third_ignore_pushes_caregiver_alert_and_acknowledges(
+def test_demo_stove_second_ignore_pushes_caregiver_alert_and_acknowledges(
     monkeypatch, tmp_path: Path
 ) -> None:
     test_settings = _isolated_settings(tmp_path, fresh_start=True)
@@ -644,8 +713,7 @@ def test_demo_stove_third_ignore_pushes_caregiver_alert_and_acknowledges(
             client.post("/demo/operator/event", json={"event": "visitor_name", "name": "Shanta"})
             client.post("/demo/operator/event", json={"event": "stove_on"})
             client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "later"})
-            client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "closed"})
-            response = client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "silent"})
+            response = client.post("/demo/operator/event", json={"event": "stove_ignored", "reason": "closed"})
 
             pushed = json.loads(caregiver.receive_text())
             alert_id = pushed["alert_id"]
@@ -655,7 +723,7 @@ def test_demo_stove_third_ignore_pushes_caregiver_alert_and_acknowledges(
     assert pushed["type"] == "caregiver_alert"
     assert pushed["risk_type"] == "stove_on"
     assert pushed["visitor_name"] == "Shanta"
-    assert pushed["ignored_count"] == 3
+    assert pushed["ignored_count"] == 2
     assert ack.status_code == 200
     assert ack.json()["type"] == "caregiver_ack"
 
