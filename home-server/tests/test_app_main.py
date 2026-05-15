@@ -609,6 +609,52 @@ def test_ws_live_mode_audio_assistant_reply_sends_reply_message(
     assert "Aayush" in reply_payload["sentence"]
 
 
+def test_ws_onboarding_unparseable_name_replies_sorry_once_then_stops_tts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Second rejected transcript must not emit another Sarvam retry line."""
+    test_settings = _isolated_settings(tmp_path, fresh_start=True)
+    monkeypatch.setattr("app.main.settings", test_settings)
+    monkeypatch.setattr("context.event_log.settings", test_settings)
+
+    # Five words -> _extract_name_from_transcript returns None.
+    bad = "one two three four five"
+    fake_heavy = Heavy(
+        processor=_RecordingProcessor([]),  # type: ignore[arg-type]
+        llm=_RecordingLLM("(unused)", voice_tool=None),  # type: ignore[arg-type]
+        tts=None,
+        whisper=_StubWhisper(bad),
+    )
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.heavy = fake_heavy
+        assert not (app.state.demo_orchestrator.state.visitor_name or "").strip()
+        with client.websocket_connect("/ws/stream?device_id=name-retry-test") as ws:
+            assert json.loads(ws.receive_text())["type"] == "assistant_reply"
+            assert json.loads(ws.receive_text())["type"] == "edge_control"
+            audio = {
+                "type": "audio",
+                "device_id": "name-retry-test",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "audio_b64": base64.b64encode(b"\x00\x01\x02").decode("ascii"),
+                "sample_rate": 16000,
+                "duration_ms": 3000,
+            }
+            ws.send_text(json.dumps(audio))
+            assert json.loads(ws.receive_text())["type"] == "voice_command"
+            sorry = json.loads(ws.receive_text())
+            assert sorry["type"] == "assistant_reply"
+            assert "Sorry" in sorry["sentence"]
+
+            ws.send_text(json.dumps(audio))
+            assert json.loads(ws.receive_text())["type"] == "voice_command"
+            ws.send_text(json.dumps({"type": "ping"}))
+            pong = json.loads(ws.receive_text())
+            assert pong["type"] == "ack" and pong["message"] == "pong"
+
+    assert not (app.state.demo_orchestrator.state.visitor_name or "").strip()
+
+
 def test_ws_audio_ignored_in_debug_stub_mode(monkeypatch, tmp_path: Path) -> None:
     """Without a Session (no Heavy), audio is parsed-and-discarded silently —
     no crash, no nudge, no audit-log noise."""

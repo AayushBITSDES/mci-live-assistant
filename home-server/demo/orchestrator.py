@@ -67,7 +67,7 @@ class DemoOrchestrator:
 
     def record_medicine_bottle_seen(self, *, now: datetime | None = None) -> None:
         now = _aware(now)
-        if self.state.medicine_state in {"idle", "done"}:
+        if self.state.medicine_state in {"idle", "done", "pending"}:
             self.state.medicine_state = "handled"
         self.state.medicine_last_seen_at = now
 
