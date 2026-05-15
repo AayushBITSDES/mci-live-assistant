@@ -266,6 +266,7 @@ def create_app() -> FastAPI:
             session is not None
             and not (demo_state.state.visitor_name or "").strip()
         )
+        name_onboarding_retry_used = False
         if awaiting_name:
             greeting_audio = await _maybe_synthesize_reply(ws.app, ONBOARDING_GREETING)
             greeting = AssistantReplyMessage(
@@ -343,13 +344,22 @@ def create_app() -> FastAPI:
                                     audio_b64=conf_audio,
                                 ).model_dump_json())
                             else:
-                                # Couldn't parse a name; re-ask once.
-                                retry = "Sorry, I didn't catch that. What should I call you?"
-                                retry_audio = await _maybe_synthesize_reply(ws.app, retry)
-                                await ws.send_text(AssistantReplyMessage(
-                                    sentence=retry,
-                                    audio_b64=retry_audio,
-                                ).model_dump_json())
+                                # Couldn't parse a name; one TTS re-prompt, then stop
+                                # onboarding (avoids Sarvam spam on every rejected chunk).
+                                if not name_onboarding_retry_used:
+                                    name_onboarding_retry_used = True
+                                    retry = "Sorry, I didn't catch that. What should I call you?"
+                                    retry_audio = await _maybe_synthesize_reply(ws.app, retry)
+                                    await ws.send_text(AssistantReplyMessage(
+                                        sentence=retry,
+                                        audio_b64=retry_audio,
+                                    ).model_dump_json())
+                                else:
+                                    awaiting_name = False
+                                    logger.info(
+                                        "WS onboarding: voice name not parsed after retry; "
+                                        "continuing without voice name"
+                                    )
                     elif session is not None:
                         result = await session.handle_audio(parsed)
                         if result is not None:

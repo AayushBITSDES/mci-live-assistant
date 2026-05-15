@@ -209,6 +209,17 @@ def test_demo_action_only_counts_stove_scenario() -> None:
     assert demo.state.stove_ignored_count == 2
 
 
+def test_medicine_bottle_seen_while_pending_returns_to_handled() -> None:
+    """Picking up the bottle after the nudge should reset the timer cycle."""
+    demo = DemoOrchestrator()
+    demo.trigger_medicine_pending(source="operator")
+    assert demo.state.medicine_state == "pending"
+    t0 = datetime(2026, 5, 12, 12, 0, tzinfo=timezone.utc)
+    demo.record_medicine_bottle_seen(now=t0)
+    assert demo.state.medicine_state == "handled"
+    assert demo.state.medicine_last_seen_at == t0
+
+
 def test_medicine_bottle_seen_then_absent_after_delay_triggers_reminder() -> None:
     demo = DemoOrchestrator(medicine_reminder_delay_seconds=30)
     demo.set_visitor_name("Maya")
